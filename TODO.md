@@ -1,0 +1,1 @@
+- [x] Replace Sparkles icon in Navbar with the provided logo image URL

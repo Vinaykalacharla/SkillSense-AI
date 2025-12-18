@@ -1,0 +1,122 @@
+import { motion } from 'framer-motion';
+import { GraduationCap, Briefcase, Building2, ArrowRight } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Link } from 'react-router-dom';
+
+const userTypes = [
+  {
+    icon: GraduationCap,
+    title: 'For Students',
+    description: 'Secure registration & login with Email + OTP. Upload projects, code, and certificates for AI-powered verification.',
+    features: [
+      'Upload Projects (PDF, ZIP, DOCX, PPT, Images)',
+      'Code & GitHub Verification',
+      'AI Plagiarism & Authenticity Checks',
+      'Authenticity Score (0-100) & Reports',
+      'Download Verified Certificates & Badges',
+      'Share Public Verification Links'
+    ],
+    cta: 'Student Login',
+    href: '/dashboard',
+    gradient: 'from-primary to-primary/60',
+  },
+  {
+    icon: Building2,
+    title: 'For Universities',
+    description: 'Institution account registration for student identity verification and bulk project assessments.',
+    features: [
+      'Student Identity Verification',
+      'Bulk Upload & Verification',
+      'AI-Generated Evaluation Reports',
+      'Approve/Reject Authenticity',
+      'Student Records & Analytics',
+      'Trust & Verification Statistics'
+    ],
+    cta: 'University Login',
+    href: '/university',
+    gradient: 'from-primary to-accent',
+  },
+  {
+    icon: Briefcase,
+    title: 'For Recruiters',
+    description: 'Search verified candidates by ID or public links. Access authentic skills and trust scores instantly.',
+    features: [
+      'Search by Verification ID/Link',
+      'View Verified Projects & Skills',
+      'Authenticity & Trust Scores',
+      'Candidate Shortlisting',
+      'Skill-Based Filtering',
+      'Verification Insights Dashboard'
+    ],
+    cta: 'Recruiter Login',
+    href: '/recruiter',
+    gradient: 'from-accent to-accent/60',
+  },
+];
+
+export function UserTypes() {
+  return (
+    <section className="section-padding relative overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-b from-card/30 via-transparent to-card/30" />
+      
+      <div className="container-custom relative z-10">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.6 }}
+          className="text-center mb-16"
+        >
+          <span className="text-sm font-medium text-primary uppercase tracking-wider">Who It's For</span>
+          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mt-4 mb-6">
+            Built for the <span className="gradient-text">Entire Ecosystem</span>
+          </h2>
+          <p className="text-muted-foreground max-w-2xl mx-auto">
+            Whether you're a student, recruiter, or university — we have the tools you need.
+          </p>
+        </motion.div>
+
+        <div className="grid lg:grid-cols-3 gap-8">
+          {userTypes.map((type, index) => (
+            <motion.div
+              key={index}
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.6, delay: index * 0.2 }}
+              className="group"
+            >
+              <div className="glass-card p-8 h-full flex flex-col card-hover relative overflow-hidden">
+                {/* Top Gradient Line */}
+                <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${type.gradient}`} />
+
+                <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${type.gradient} flex items-center justify-center mb-6`}>
+                  <type.icon className="w-7 h-7 text-primary-foreground" />
+                </div>
+
+                <h3 className="text-2xl font-semibold mb-3">{type.title}</h3>
+                <p className="text-muted-foreground mb-6">{type.description}</p>
+
+                <ul className="space-y-3 mb-8 flex-grow">
+                  {type.features.map((feature, i) => (
+                    <li key={i} className="flex items-center gap-3 text-sm">
+                      <div className={`w-1.5 h-1.5 rounded-full bg-gradient-to-r ${type.gradient}`} />
+                      {feature}
+                    </li>
+                  ))}
+                </ul>
+
+                <Link to={type.href}>
+                  <Button variant="outline" className="w-full group-hover:border-primary/50">
+                    {type.cta}
+                    <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </Button>
+                </Link>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}

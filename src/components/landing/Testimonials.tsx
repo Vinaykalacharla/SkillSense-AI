@@ -1,0 +1,92 @@
+import { motion } from 'framer-motion';
+import { Star, Quote } from 'lucide-react';
+
+const testimonials = [
+  {
+    name: 'Priya Sharma',
+    role: 'Computer Science Student',
+    company: 'IIT Delhi',
+    image: 'https://i.pravatar.cc/100?img=1',
+    content: 'SkillVerify helped me showcase my actual coding abilities. I got 3 interview calls within a week of sharing my verified passport!',
+    rating: 5,
+  },
+  {
+    name: 'Rajesh Kumar',
+    role: 'Senior Recruiter',
+    company: 'Google India',
+    image: 'https://i.pravatar.cc/100?img=3',
+    content: 'We reduced our screening time by 60%. The verified skill badges give us confidence in candidate capabilities before interviews.',
+    rating: 5,
+  },
+  {
+    name: 'Dr. Ananya Patel',
+    role: 'Placement Director',
+    company: 'NIT Trichy',
+    image: 'https://i.pravatar.cc/100?img=5',
+    content: 'The batch analytics helped us identify skill gaps early. Our placement rate improved by 25% this year.',
+    rating: 5,
+  },
+];
+
+export function Testimonials() {
+  return (
+    <section className="section-padding relative">
+      <div className="container-custom">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.6 }}
+          className="text-center mb-16"
+        >
+          <span className="text-sm font-medium text-accent uppercase tracking-wider">Testimonials</span>
+          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mt-4 mb-6">
+            Loved by <span className="gradient-text">Thousands</span>
+          </h2>
+          <p className="text-muted-foreground max-w-2xl mx-auto">
+            See what students, recruiters, and universities are saying about SkillVerify.
+          </p>
+        </motion.div>
+
+        <div className="grid md:grid-cols-3 gap-8">
+          {testimonials.map((testimonial, index) => (
+            <motion.div
+              key={index}
+              initial={{ opacity: 0, y: 30 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.6, delay: index * 0.2 }}
+            >
+              <div className="glass-card p-6 h-full relative card-hover">
+                <Quote className="w-8 h-8 text-primary/20 absolute top-6 right-6" />
+                
+                {/* Rating */}
+                <div className="flex gap-1 mb-4">
+                  {[...Array(testimonial.rating)].map((_, i) => (
+                    <Star key={i} className="w-4 h-4 fill-primary text-primary" />
+                  ))}
+                </div>
+
+                <p className="text-foreground/90 mb-6 relative z-10">"{testimonial.content}"</p>
+
+                <div className="flex items-center gap-4">
+                  <img
+                    src={testimonial.image}
+                    alt={testimonial.name}
+                    className="w-12 h-12 rounded-full border-2 border-primary/20"
+                  />
+                  <div>
+                    <div className="font-semibold">{testimonial.name}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {testimonial.role} • {testimonial.company}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
