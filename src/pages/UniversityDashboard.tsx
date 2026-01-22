@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
@@ -26,61 +27,54 @@ import {
   Legend,
 } from 'recharts';
 
-const skillDistribution = [
-  { name: 'React', students: 450 },
-  { name: 'Python', students: 380 },
-  { name: 'Java', students: 320 },
-  { name: 'Node.js', students: 280 },
-  { name: 'SQL', students: 420 },
-  { name: 'AWS', students: 180 },
-];
+interface Summary {
+  students: number;
+  average_ready: number;
+}
 
-const placementTrend = [
-  { month: 'Jan', placed: 45, target: 50 },
-  { month: 'Feb', placed: 82, target: 100 },
-  { month: 'Mar', placed: 125, target: 150 },
-  { month: 'Apr', placed: 180, target: 200 },
-  { month: 'May', placed: 230, target: 250 },
-];
-
-const readinessData = [
-  { name: 'Placement Ready', value: 35, color: 'hsl(var(--primary))' },
-  { name: 'Almost Ready', value: 40, color: 'hsl(var(--accent))' },
-  { name: 'Needs Improvement', value: 25, color: 'hsl(var(--muted))' },
-];
-
-const interventions = [
-  {
-    batch: 'CSE 2025',
-    issue: 'Low communication scores',
-    affected: 45,
-    suggestion: 'Conduct mock interview workshops',
-    priority: 'high',
-  },
-  {
-    batch: 'IT 2025',
-    issue: 'Missing cloud skills',
-    affected: 78,
-    suggestion: 'AWS certification bootcamp',
-    priority: 'medium',
-  },
-  {
-    batch: 'ECE 2025',
-    issue: 'Limited project experience',
-    affected: 32,
-    suggestion: 'Industry project partnerships',
-    priority: 'high',
-  },
-];
+interface SkillDistribution {
+  name: string;
+  count: number;
+}
 
 export default function UniversityDashboard() {
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [skillDistribution, setSkillDistribution] = useState<SkillDistribution[]>([]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('accessToken');
+    if (!token) {
+      return;
+    }
+    fetch('http://127.0.0.1:8000/api/skills/university-dashboard/', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        setSummary(data?.summary || null);
+        setSkillDistribution(Array.isArray(data?.skill_distribution) ? data.skill_distribution : []);
+      })
+      .catch(() => {
+        setSummary(null);
+        setSkillDistribution([]);
+      });
+  }, []);
+
+  const readinessData = summary
+    ? [
+        { name: 'Placement Ready', value: Math.round(summary.average_ready || 0), color: 'hsl(var(--primary))' },
+        { name: 'Almost Ready', value: Math.max(0, 100 - Math.round(summary.average_ready || 0)), color: 'hsl(var(--accent))' },
+      ]
+    : [];
+
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
 
       <main className="pt-24 pb-16 px-4 sm:px-6 lg:px-8">
         <div className="container-custom">
-          {/* Header */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -92,7 +86,7 @@ export default function UniversityDashboard() {
                 University <span className="gradient-text">Analytics</span>
               </h1>
               <p className="text-muted-foreground">
-                IIT Delhi • Batch 2024-2025
+                Batch performance and student readiness overview
               </p>
             </div>
             <div className="flex gap-3 mt-4 md:mt-0">
@@ -107,13 +101,12 @@ export default function UniversityDashboard() {
             </div>
           </motion.div>
 
-          {/* Stats Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             {[
-              { label: 'Total Students', value: '2,456', icon: Users, change: '+156' },
-              { label: 'Avg. Skill Score', value: '78.5', icon: TrendingUp, change: '+5.2' },
-              { label: 'Placement Ready', value: '68%', icon: Target, change: '+12%' },
-              { label: 'Need Attention', value: '234', icon: AlertTriangle, change: '-45' },
+              { label: 'Total Students', value: summary?.students ?? '--', icon: Users, change: '--' },
+              { label: 'Avg. Ready Score', value: summary?.average_ready ?? '--', icon: TrendingUp, change: '--' },
+              { label: 'Placement Ready', value: summary ? `${summary.average_ready}%` : '--', icon: Target, change: '--' },
+              { label: 'Need Attention', value: '--', icon: AlertTriangle, change: '--' },
             ].map((stat, index) => (
               <motion.div
                 key={index}
@@ -126,13 +119,7 @@ export default function UniversityDashboard() {
                   <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
                     <stat.icon className="w-5 h-5 text-primary" />
                   </div>
-                  <span
-                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      stat.change.startsWith('+')
-                        ? 'bg-green-500/10 text-green-400'
-                        : 'bg-red-500/10 text-red-400'
-                    }`}
-                  >
+                  <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-muted/50 text-muted-foreground">
                     {stat.change}
                   </span>
                 </div>
@@ -143,7 +130,6 @@ export default function UniversityDashboard() {
           </div>
 
           <div className="grid lg:grid-cols-3 gap-8 mb-8">
-            {/* Skill Distribution Heatmap */}
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
@@ -152,28 +138,33 @@ export default function UniversityDashboard() {
             >
               <h3 className="text-lg font-semibold mb-4">Skill Distribution</h3>
               <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={skillDistribution}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis
-                      dataKey="name"
-                      tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
-                    />
-                    <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
-                    <Tooltip
-                      contentStyle={{
-                        background: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
-                    />
-                    <Bar dataKey="students" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+                {skillDistribution.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-muted-foreground">
+                    No skill distribution data yet
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={skillDistribution}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis
+                        dataKey="name"
+                        tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
+                      />
+                      <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                      <Tooltip
+                        contentStyle={{
+                          background: 'hsl(var(--card))',
+                          border: '1px solid hsl(var(--border))',
+                          borderRadius: '8px',
+                        }}
+                      />
+                      <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </motion.div>
 
-            {/* Placement Readiness */}
             <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
@@ -182,48 +173,57 @@ export default function UniversityDashboard() {
             >
               <h3 className="text-lg font-semibold mb-4">Placement Readiness</h3>
               <div className="h-[200px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={readinessData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={50}
-                      outerRadius={80}
-                      dataKey="value"
-                    >
-                      {readinessData.map((entry, index) => (
-                        <Cell key={index} fill={entry.color} />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{
-                        background: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
+                {readinessData.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-muted-foreground">
+                    No readiness data yet
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={readinessData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={50}
+                        outerRadius={80}
+                        dataKey="value"
+                      >
+                        {readinessData.map((entry, index) => (
+                          <Cell key={index} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{
+                          background: 'hsl(var(--card))',
+                          border: '1px solid hsl(var(--border))',
+                          borderRadius: '8px',
+                        }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
               </div>
               <div className="space-y-2 mt-4">
-                {readinessData.map((item, index) => (
-                  <div key={index} className="flex items-center justify-between text-sm">
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="w-3 h-3 rounded-full"
-                        style={{ background: item.color }}
-                      />
-                      {item.name}
+                {readinessData.length === 0 ? (
+                  <div className="text-center text-muted-foreground">No readiness data yet</div>
+                ) : (
+                  readinessData.map((item, index) => (
+                    <div key={index} className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ background: item.color }}
+                        />
+                        {item.name}
+                      </div>
+                      <span className="font-medium">{item.value}%</span>
                     </div>
-                    <span className="font-medium">{item.value}%</span>
-                  </div>
-                ))}
+                  ))
+                )}
               </div>
             </motion.div>
           </div>
 
-          {/* Placement Trend & Interventions */}
           <div className="grid lg:grid-cols-2 gap-8">
             <motion.div
               initial={{ opacity: 0, y: 30 }}
@@ -233,38 +233,9 @@ export default function UniversityDashboard() {
             >
               <h3 className="text-lg font-semibold mb-4">Placement Trend</h3>
               <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={placementTrend}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                    <XAxis
-                      dataKey="month"
-                      tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
-                    />
-                    <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
-                    <Tooltip
-                      contentStyle={{
-                        background: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
-                    />
-                    <Legend />
-                    <Line
-                      type="monotone"
-                      dataKey="placed"
-                      stroke="hsl(var(--primary))"
-                      strokeWidth={2}
-                      dot={{ fill: 'hsl(var(--primary))' }}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="target"
-                      stroke="hsl(var(--accent))"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+                <div className="h-full flex items-center justify-center text-muted-foreground">
+                  No placement trend data yet
+                </div>
               </div>
             </motion.div>
 
@@ -275,26 +246,8 @@ export default function UniversityDashboard() {
               className="glass-card p-6"
             >
               <h3 className="text-lg font-semibold mb-4">AI Intervention Suggestions</h3>
-              <div className="space-y-4">
-                {interventions.map((item, index) => (
-                  <div
-                    key={index}
-                    className={`p-4 rounded-xl border-l-4 ${
-                      item.priority === 'high'
-                        ? 'border-l-red-500 bg-red-500/5'
-                        : 'border-l-amber-500 bg-amber-500/5'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-medium">{item.batch}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {item.affected} students
-                      </span>
-                    </div>
-                    <p className="text-sm text-muted-foreground mb-2">{item.issue}</p>
-                    <p className="text-sm font-medium text-primary">{item.suggestion}</p>
-                  </div>
-                ))}
+              <div className="text-center text-muted-foreground py-6">
+                No intervention data yet
               </div>
             </motion.div>
           </div>

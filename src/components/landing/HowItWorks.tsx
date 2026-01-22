@@ -1,28 +1,20 @@
 import { motion } from 'framer-motion';
 import { Upload, Brain, BadgeCheck, ArrowRight } from 'lucide-react';
 
-const steps = [
-  {
-    icon: Upload,
-    title: 'Upload Your Work',
-    description: 'Submit code from GitHub, documents, project videos, or take AI interviews.',
-    color: 'primary',
-  },
-  {
-    icon: Brain,
-    title: 'Multimodal AI Analysis',
-    description: 'Our AI analyzes patterns, detects authenticity, and extracts real skills.',
-    color: 'accent',
-  },
-  {
-    icon: BadgeCheck,
-    title: 'Verified Skill Passport',
-    description: 'Receive a tamper-proof digital credential with evidence-backed skills.',
-    color: 'primary',
-  },
-];
+const iconMap = {
+  Upload,
+  Brain,
+  BadgeCheck,
+};
 
-export function HowItWorks() {
+type Step = {
+  icon: keyof typeof iconMap;
+  title: string;
+  description: string;
+  color: 'primary' | 'accent';
+};
+
+export function HowItWorks({ steps }: { steps: Step[] }) {
   return (
     <section className="section-padding relative overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-card/50 to-transparent" />
@@ -48,7 +40,9 @@ export function HowItWorks() {
           {/* Connection Line */}
           <div className="hidden md:block absolute top-24 left-1/4 right-1/4 h-0.5 bg-gradient-to-r from-primary via-accent to-primary opacity-30" />
 
-          {steps.map((step, index) => (
+          {steps.map((step, index) => {
+            const Icon = iconMap[step.icon] || Upload;
+            return (
             <motion.div
               key={index}
               initial={{ opacity: 0, y: 30 }}
@@ -64,8 +58,12 @@ export function HowItWorks() {
                 </div>
 
                 {/* Icon */}
-                <div className={`w-16 h-16 mx-auto mb-6 rounded-2xl bg-${step.color}/10 flex items-center justify-center`}>
-                  <step.icon className={`w-8 h-8 ${step.color === 'primary' ? 'text-primary' : 'text-accent'}`} />
+                <div
+                  className={`w-16 h-16 mx-auto mb-6 rounded-2xl flex items-center justify-center ${
+                    step.color === 'primary' ? 'bg-primary/10' : 'bg-accent/10'
+                  }`}
+                >
+                  <Icon className={`w-8 h-8 ${step.color === 'primary' ? 'text-primary' : 'text-accent'}`} />
                 </div>
 
                 <h3 className="text-xl font-semibold mb-3">{step.title}</h3>
@@ -79,7 +77,8 @@ export function HowItWorks() {
                 </div>
               )}
             </motion.div>
-          ))}
+          );
+          })}
         </div>
       </div>
     </section>

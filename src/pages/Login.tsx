@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { buildApiUrl } from '@/lib/api';
 
 const roleConfigs = {
   student: {
@@ -60,16 +61,36 @@ export default function Login() {
     );
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
-    if (formData.email === config.email && formData.password === config.password) {
-      // In a real app, you'd set authentication state here
-      localStorage.setItem('userRole', role);
-      navigate(config.redirectTo);
-    } else {
-      setError('Invalid email or password');
+    try {
+      const response = await fetch(buildApiUrl('/api/accounts/login/'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          email: formData.email,
+          password: formData.password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        // Store tokens and user data
+        localStorage.setItem('accessToken', data.access);
+        localStorage.setItem('refreshToken', data.refresh);
+        localStorage.setItem('userRole', data.user.role);
+        localStorage.setItem('user', JSON.stringify(data.user));
+        navigate(config.redirectTo);
+      } else {
+        setError(data.error || 'Login failed');
+      }
+    } catch (error) {
+      setError('Network error. Please try again.');
     }
   };
 
@@ -153,6 +174,17 @@ export default function Login() {
                 Back to Home
               </button>
             </div>
+
+            {role === 'student' && (
+              <div className="mt-4 text-center">
+                <button
+                  onClick={() => navigate('/student/register')}
+                  className="text-sm text-primary hover:text-primary/90"
+                >
+                  New here? Create a student account
+                </button>
+              </div>
+            )}
           </CardContent>
         </Card>
       </motion.div>

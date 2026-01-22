@@ -1,5 +1,8 @@
-Django==5.2.9
+Django==4.2
 djangorestframework
 djangorestframework-simplejwt
 django-allauth
+django-cors-headers
 Pillow
+reportlab
+matplotlib

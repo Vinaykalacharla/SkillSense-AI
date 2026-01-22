@@ -4,13 +4,11 @@ import { Menu, X, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 const navItems = [
-  { label: 'Home', href: '/', type: 'link' },
+  { label: 'Home', href: '#hero', type: 'scroll' },
   { label: 'About', href: '#about', type: 'scroll' },
   { label: 'Features', href: '#features', type: 'scroll' },
-  { label: 'Dashboard', href: '/dashboard', type: 'link' },
-  { label: 'Login', href: '/login', type: 'link' },
+  { label: 'Get Started', href: '#ecosystem', type: 'scroll' },
   { label: 'Contact Us', href: '#contact-us', type: 'scroll' },
-  { label: 'Get Started', href: '/dashboard', type: 'link' },
 ];
 
 const Navbar = () => {

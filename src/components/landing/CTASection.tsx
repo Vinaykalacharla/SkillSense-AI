@@ -3,7 +3,14 @@ import { ArrowRight, Sparkles, Mail, Phone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
 
-export function CTASection() {
+type ContactContent = {
+  email?: string;
+  phone?: string;
+  headline?: string;
+  subtext?: string;
+};
+
+export function CTASection({ content }: { content?: ContactContent }) {
   return (
     <section id="contact-us" className="section-padding relative overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-r from-primary/10 via-transparent to-accent/10" />
@@ -23,27 +30,26 @@ export function CTASection() {
           </div>
 
           <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-6">
-            Get in Touch with{' '}
-            <span className="gradient-text">Skillsence AI</span>
+            {content?.headline || ''}
           </h2>
 
           <p className="text-muted-foreground text-lg mb-8 max-w-2xl mx-auto">
-            Have questions or need assistance? We're here to help you on your journey to verified skills and career success.
+            {content?.subtext || ''}
           </p>
 
           <div className="flex flex-col gap-6 justify-center items-center">
             <div className="flex items-center gap-4 text-lg">
               <Mail className="w-6 h-6 text-primary" />
-              <span>skillssenceai@gmail.com</span>
+              <span>{content?.email || ''}</span>
             </div>
             <div className="flex items-center gap-4 text-lg">
               <Phone className="w-6 h-6 text-primary" />
-              <span>+91 6300063289</span>
+              <span>{content?.phone || ''}</span>
             </div>
           </div>
 
           <div className="flex flex-col sm:flex-row gap-4 justify-center mt-8">
-            <Link to="/dashboard">
+            <Link to="/student/start">
               <Button variant="hero" size="xl">
                 Get Started Free
                 <ArrowRight className="w-5 h-5" />

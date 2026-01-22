@@ -1,34 +1,16 @@
 import { motion } from 'framer-motion';
 import { Star, Quote } from 'lucide-react';
 
-const testimonials = [
-  {
-    name: 'Priya Sharma',
-    role: 'Computer Science Student',
-    company: 'IIT Delhi',
-    image: 'https://i.pravatar.cc/100?img=1',
-    content: 'SkillVerify helped me showcase my actual coding abilities. I got 3 interview calls within a week of sharing my verified passport!',
-    rating: 5,
-  },
-  {
-    name: 'Rajesh Kumar',
-    role: 'Senior Recruiter',
-    company: 'Google India',
-    image: 'https://i.pravatar.cc/100?img=3',
-    content: 'We reduced our screening time by 60%. The verified skill badges give us confidence in candidate capabilities before interviews.',
-    rating: 5,
-  },
-  {
-    name: 'Dr. Ananya Patel',
-    role: 'Placement Director',
-    company: 'NIT Trichy',
-    image: 'https://i.pravatar.cc/100?img=5',
-    content: 'The batch analytics helped us identify skill gaps early. Our placement rate improved by 25% this year.',
-    rating: 5,
-  },
-];
+type Testimonial = {
+  name: string;
+  role: string;
+  company: string;
+  image: string;
+  content: string;
+  rating: number;
+};
 
-export function Testimonials() {
+export function Testimonials({ testimonials }: { testimonials: Testimonial[] }) {
   return (
     <section className="section-padding relative">
       <div className="container-custom">

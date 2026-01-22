@@ -1,43 +1,46 @@
 import { motion } from 'framer-motion';
 import { Code, MessageSquare, Shield, Target } from 'lucide-react';
 
-const scores = [
-  {
+type ScoreKey = 'coding_skill_index' | 'communication_score' | 'authenticity_score' | 'placement_ready';
+
+const scoreConfig: Record<ScoreKey, { icon: typeof Code; label: string; color: 'primary' | 'accent' }> = {
+  coding_skill_index: {
     icon: Code,
     label: 'Coding Skill Index',
-    score: 87,
-    change: '+5',
     color: 'primary',
   },
-  {
+  communication_score: {
     icon: MessageSquare,
     label: 'Communication Score',
-    score: 72,
-    change: '+8',
     color: 'accent',
   },
-  {
+  authenticity_score: {
     icon: Shield,
     label: 'Authenticity Score',
-    score: 95,
-    change: '+2',
     color: 'primary',
   },
-  {
+  placement_ready: {
     icon: Target,
     label: 'Placement Ready',
-    score: 78,
-    change: '+12',
     color: 'accent',
   },
-];
+};
 
-export function ScoreCards() {
+export function ScoreCards({ scores }: { scores?: Record<string, number> }) {
+  const resolvedScores = (scores || {}) as Record<ScoreKey, number>;
+
+  const items = (Object.keys(scoreConfig) as ScoreKey[]).map((key) => ({
+    key,
+    score: resolvedScores[key] ?? 0,
+    change: '+0',
+    ...scoreConfig[key],
+  }));
+
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      {scores.map((item, index) => (
+      {items.map((item, index) => (
         <motion.div
-          key={index}
+          key={item.key}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: index * 0.1 }}
@@ -59,21 +62,25 @@ export function ScoreCards() {
               {item.change}
             </span>
           </div>
-          <div className="text-3xl font-bold mb-1">{item.score}</div>
+          <div className="text-3xl font-bold mb-1">
+            {scores ? item.score : '--'}
+          </div>
           <div className="text-sm text-muted-foreground">{item.label}</div>
           
           {/* Progress Bar */}
           <div className="mt-3 h-1.5 bg-muted rounded-full overflow-hidden">
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${item.score}%` }}
-              transition={{ duration: 1, delay: index * 0.1 + 0.3 }}
-              className={`h-full rounded-full ${
-                item.color === 'primary'
-                  ? 'bg-gradient-to-r from-primary to-primary/60'
-                  : 'bg-gradient-to-r from-accent to-accent/60'
-              }`}
-            />
+            {scores && (
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${item.score}%` }}
+                transition={{ duration: 1, delay: index * 0.1 + 0.3 }}
+                className={`h-full rounded-full ${
+                  item.color === 'primary'
+                    ? 'bg-gradient-to-r from-primary to-primary/60'
+                    : 'bg-gradient-to-r from-accent to-accent/60'
+                }`}
+              />
+            )}
           </div>
         </motion.div>
       ))}

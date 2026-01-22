@@ -3,27 +3,19 @@ import { Link, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   LayoutDashboard,
-  Upload,
-  FileCheck,
   Mic,
   BadgeCheck,
   Settings,
   ChevronLeft,
   Sparkles,
   Code,
-  FileText,
-  Video,
   TrendingUp,
   BookOpen,
 } from 'lucide-react';
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
-  { icon: Upload, label: 'Submit Work', href: '/dashboard/submit' },
   { icon: Code, label: 'Code Analysis', href: '/dashboard/code' },
-  { icon: FileText, label: 'Documents', href: '/dashboard/documents' },
-  { icon: Video, label: 'Video/Audio', href: '/dashboard/media' },
-  { icon: FileCheck, label: 'Evidence Viewer', href: '/dashboard/evidence' },
   { icon: Mic, label: 'AI Interview', href: '/dashboard/interview' },
   { icon: BadgeCheck, label: 'Skill Passport', href: '/dashboard/passport' },
   { icon: TrendingUp, label: 'Progress', href: '/dashboard/progress' },

@@ -3,60 +3,25 @@ import { GraduationCap, Briefcase, Building2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
 
-const userTypes = [
-  {
-    icon: GraduationCap,
-    title: 'For Students',
-    description: 'Secure registration & login with Email + OTP. Upload projects, code, and certificates for AI-powered verification.',
-    features: [
-      'Upload Projects (PDF, ZIP, DOCX, PPT, Images)',
-      'Code & GitHub Verification',
-      'AI Plagiarism & Authenticity Checks',
-      'Authenticity Score (0-100) & Reports',
-      'Download Verified Certificates & Badges',
-      'Share Public Verification Links'
-    ],
-    cta: 'Student Login',
-    href: '/dashboard',
-    gradient: 'from-primary to-primary/60',
-  },
-  {
-    icon: Building2,
-    title: 'For Universities',
-    description: 'Institution account registration for student identity verification and bulk project assessments.',
-    features: [
-      'Student Identity Verification',
-      'Bulk Upload & Verification',
-      'AI-Generated Evaluation Reports',
-      'Approve/Reject Authenticity',
-      'Student Records & Analytics',
-      'Trust & Verification Statistics'
-    ],
-    cta: 'University Login',
-    href: '/university',
-    gradient: 'from-primary to-accent',
-  },
-  {
-    icon: Briefcase,
-    title: 'For Recruiters',
-    description: 'Search verified candidates by ID or public links. Access authentic skills and trust scores instantly.',
-    features: [
-      'Search by Verification ID/Link',
-      'View Verified Projects & Skills',
-      'Authenticity & Trust Scores',
-      'Candidate Shortlisting',
-      'Skill-Based Filtering',
-      'Verification Insights Dashboard'
-    ],
-    cta: 'Recruiter Login',
-    href: '/recruiter',
-    gradient: 'from-accent to-accent/60',
-  },
-];
+const iconMap = {
+  GraduationCap,
+  Building2,
+  Briefcase,
+};
 
-export function UserTypes() {
+type UserType = {
+  icon: keyof typeof iconMap;
+  title: string;
+  description: string;
+  features: string[];
+  cta: string;
+  href: string;
+  gradient: string;
+};
+
+export function UserTypes({ userTypes }: { userTypes: UserType[] }) {
   return (
-    <section className="section-padding relative overflow-hidden">
+    <section id="ecosystem" className="section-padding relative overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-card/30 via-transparent to-card/30" />
       
       <div className="container-custom relative z-10">
@@ -77,7 +42,9 @@ export function UserTypes() {
         </motion.div>
 
         <div className="grid lg:grid-cols-3 gap-8">
-          {userTypes.map((type, index) => (
+          {userTypes.map((type, index) => {
+            const Icon = iconMap[type.icon] || GraduationCap;
+            return (
             <motion.div
               key={index}
               initial={{ opacity: 0, y: 30 }}
@@ -91,7 +58,7 @@ export function UserTypes() {
                 <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${type.gradient}`} />
 
                 <div className={`w-14 h-14 rounded-2xl bg-gradient-to-br ${type.gradient} flex items-center justify-center mb-6`}>
-                  <type.icon className="w-7 h-7 text-primary-foreground" />
+                  <Icon className="w-7 h-7 text-primary-foreground" />
                 </div>
 
                 <h3 className="text-2xl font-semibold mb-3">{type.title}</h3>
@@ -114,7 +81,8 @@ export function UserTypes() {
                 </Link>
               </div>
             </motion.div>
-          ))}
+          );
+          })}
         </div>
       </div>
     </section>
