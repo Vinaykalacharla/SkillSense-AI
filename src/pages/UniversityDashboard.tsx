@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
@@ -38,12 +39,15 @@ interface SkillDistribution {
 }
 
 export default function UniversityDashboard() {
+  const navigate = useNavigate();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [skillDistribution, setSkillDistribution] = useState<SkillDistribution[]>([]);
 
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
-    if (!token) {
+    const role = localStorage.getItem('userRole');
+    if (!token || role !== 'university') {
+      navigate('/university');
       return;
     }
     fetch('http://127.0.0.1:8000/api/skills/university-dashboard/', {
@@ -51,8 +55,17 @@ export default function UniversityDashboard() {
         Authorization: `Bearer ${token}`,
       },
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          navigate('/university');
+          return null;
+        }
+        return res.json();
+      })
       .then((data) => {
+        if (!data) {
+          return;
+        }
         setSummary(data?.summary || null);
         setSkillDistribution(Array.isArray(data?.skill_distribution) ? data.skill_distribution : []);
       })
@@ -60,7 +73,7 @@ export default function UniversityDashboard() {
         setSummary(null);
         setSkillDistribution([]);
       });
-  }, []);
+  }, [navigate]);
 
   const readinessData = summary
     ? [

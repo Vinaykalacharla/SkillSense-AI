@@ -235,6 +235,30 @@ class CodeAnalysisReport(models.Model):
         return f"{self.user.username} - {self.repo_url}"
 
 
+class RepoFileSnapshot(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='repo_file_snapshots')
+    repo_url = models.URLField()
+    path = models.TextField()
+    sha = models.CharField(max_length=64)
+    content = models.TextField()
+    size = models.IntegerField(default=0)
+    lines = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = _('Repo File Snapshot')
+        verbose_name_plural = _('Repo File Snapshots')
+        unique_together = ['user', 'repo_url', 'path', 'sha']
+        indexes = [
+            models.Index(fields=['repo_url', 'path']),
+            models.Index(fields=['sha']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} - {self.path}"
+
+
 class MediaUpload(models.Model):
     MEDIA_TYPES = [
         ('video', 'Video'),

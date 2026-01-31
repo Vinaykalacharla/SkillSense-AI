@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion';
+﻿import { motion } from 'framer-motion';
 import { GraduationCap, Briefcase, Building2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
@@ -22,8 +22,9 @@ type UserType = {
 export function UserTypes({ userTypes }: { userTypes: UserType[] }) {
   return (
     <section id="ecosystem" className="section-padding relative overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-b from-card/30 via-transparent to-card/30" />
-      
+      <div className="absolute inset-0 bg-gradient-to-b from-card/60 via-transparent to-card/60" />
+      <div className="absolute inset-0 noise-bg" />
+
       <div className="container-custom relative z-10">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -32,12 +33,12 @@ export function UserTypes({ userTypes }: { userTypes: UserType[] }) {
           transition={{ duration: 0.6 }}
           className="text-center mb-16"
         >
-          <span className="text-sm font-medium text-primary uppercase tracking-wider">Who It's For</span>
-          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mt-4 mb-6">
+          <span className="eyebrow-badge">Who It Is For</span>
+          <h2 className="section-title mt-6 mb-6">
             Built for the <span className="gradient-text">Entire Ecosystem</span>
           </h2>
-          <p className="text-muted-foreground max-w-2xl mx-auto">
-            Whether you're a student, recruiter, or university — we have the tools you need.
+          <p className="section-subtitle max-w-2xl mx-auto">
+            Whether you are a student, recruiter, or university, we have the tools you need.
           </p>
         </motion.div>
 
@@ -51,9 +52,9 @@ export function UserTypes({ userTypes }: { userTypes: UserType[] }) {
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
               transition={{ duration: 0.6, delay: index * 0.2 }}
-              className="group"
+              className="group perspective-1000"
             >
-              <div className="glass-card p-8 h-full flex flex-col card-hover relative overflow-hidden">
+              <div className="glass-card p-8 h-full flex flex-col card-hover relative overflow-hidden tilt-card">
                 {/* Top Gradient Line */}
                 <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${type.gradient}`} />
 
@@ -88,3 +89,4 @@ export function UserTypes({ userTypes }: { userTypes: UserType[] }) {
     </section>
   );
 }
+

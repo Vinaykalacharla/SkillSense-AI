@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { DashboardSidebar } from '@/components/dashboard/Sidebar';
 import { ScoreCards } from '@/components/dashboard/ScoreCards';
@@ -8,7 +8,7 @@ import { RecentActivity } from '@/components/dashboard/RecentActivity';
 import { RecommendedActions } from '@/components/dashboard/RecommendedActions';
 import { VerificationTimeline } from '@/components/dashboard/VerificationTimeline';
 import { PerformanceTrends } from '@/components/dashboard/PerformanceTrends';
-import { Bell, Search, User, RefreshCcw, ShieldCheck } from 'lucide-react';
+import { Bell, Search, User, RefreshCcw, ShieldCheck, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { buildApiUrl } from '@/lib/api';
@@ -21,6 +21,8 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [profileVerified, setProfileVerified] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const [githubInsights, setGithubInsights] = useState<{
     top_languages: Array<[string, number]>;
     forked: number;
@@ -71,6 +73,31 @@ export default function Dashboard() {
         // Keep fallback data on network error.
       });
   }, []);
+
+  useEffect(() => {
+    if (!profileMenuOpen) {
+      return;
+    }
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!profileMenuRef.current) {
+        return;
+      }
+      if (!profileMenuRef.current.contains(event.target as Node)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setProfileMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [profileMenuOpen]);
 
   const handleRecalculate = () => {
     const token = localStorage.getItem('accessToken');
@@ -129,6 +156,31 @@ export default function Dashboard() {
       .finally(() => setDownloading(false));
   };
 
+  const handleLogout = async () => {
+    const refresh = localStorage.getItem('refreshToken');
+    const access = localStorage.getItem('accessToken');
+    try {
+      if (refresh) {
+        await fetch(buildApiUrl('/api/accounts/logout/'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(access ? { Authorization: `Bearer ${access}` } : {}),
+          },
+          body: JSON.stringify({ refresh }),
+        });
+      }
+    } catch (error) {
+      // Ignore logout API errors; we still clear local session state.
+    } finally {
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
+      localStorage.removeItem('userRole');
+      localStorage.removeItem('user');
+      navigate('/student');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
@@ -171,8 +223,28 @@ export default function Dashboard() {
               <Bell className="w-5 h-5" />
               <span className="absolute top-1 right-1 w-2 h-2 bg-primary rounded-full" />
             </Button>
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center">
-              <User className="w-5 h-5 text-primary-foreground" />
+            <div className="relative" ref={profileMenuRef}>
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={profileMenuOpen}
+                onClick={() => setProfileMenuOpen((prev) => !prev)}
+                className="w-9 h-9 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              >
+                <User className="w-5 h-5 text-primary-foreground" />
+              </button>
+              {profileMenuOpen && (
+                <div className="absolute right-0 mt-2 w-44 rounded-xl border border-border/60 bg-background/95 shadow-xl backdrop-blur p-1">
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg text-left hover:bg-muted/50 transition-colors"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Logout
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>

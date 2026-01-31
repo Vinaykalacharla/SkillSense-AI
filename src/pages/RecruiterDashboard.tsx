@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Navbar } from '@/components/layout/Navbar';
 import { Footer } from '@/components/layout/Footer';
@@ -35,13 +36,16 @@ interface Candidate {
 }
 
 export default function RecruiterDashboard() {
+  const navigate = useNavigate();
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
   const [compareMode, setCompareMode] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
-    if (!token) {
+    const role = localStorage.getItem('userRole');
+    if (!token || role !== 'recruiter') {
+      navigate('/recruiter');
       return;
     }
     fetch('http://127.0.0.1:8000/api/skills/recruiter-dashboard/', {
@@ -49,8 +53,17 @@ export default function RecruiterDashboard() {
         Authorization: `Bearer ${token}`,
       },
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (res.status === 401 || res.status === 403) {
+          navigate('/recruiter');
+          return null;
+        }
+        return res.json();
+      })
       .then((data) => {
+        if (!data) {
+          return;
+        }
         const list = Array.isArray(data?.candidates) ? data.candidates : [];
         setCandidates(list);
         setSelectedCandidate(list[0] || null);
@@ -59,7 +72,7 @@ export default function RecruiterDashboard() {
         setCandidates([]);
         setSelectedCandidate(null);
       });
-  }, []);
+  }, [navigate]);
 
   const radarData = (selectedCandidate?.skills || []).map((skill) => ({
     skill: skill.name,

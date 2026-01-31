@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+﻿import { Link } from 'react-router-dom';
 import { Sparkles, Twitter, Linkedin, Github } from 'lucide-react';
 
 const footerLinks = {
@@ -30,8 +30,10 @@ const footerLinks = {
 
 export function Footer() {
   return (
-    <footer className="border-t border-border/50 bg-card/30">
-      <div className="container-custom section-padding">
+    <footer className="relative border-t border-border/50 bg-card/40 overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-b from-card/60 to-background/80" />
+      <div className="absolute inset-0 noise-bg" />
+      <div className="container-custom section-padding relative z-10">
         <div className="grid grid-cols-2 md:grid-cols-6 gap-8 lg:gap-12">
           {/* Brand */}
           <div className="col-span-2">
@@ -113,7 +115,7 @@ export function Footer() {
 
         <div className="mt-12 pt-8 border-t border-border/50 flex flex-col md:flex-row justify-between items-center gap-4">
           <p className="text-muted-foreground text-sm">
-            © 2025 SkillVerify. All rights reserved.
+            (c) 2025 SkillVerify. All rights reserved.
           </p>
           <p className="text-muted-foreground text-sm">
             Powered by Multimodal AI
@@ -123,3 +125,4 @@ export function Footer() {
     </footer>
   );
 }
+

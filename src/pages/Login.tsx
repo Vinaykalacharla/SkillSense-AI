@@ -13,24 +13,18 @@ const roleConfigs = {
     icon: GraduationCap,
     title: 'Student Login',
     description: 'Access your skill verification dashboard',
-    email: 'student@skillsence.ai',
-    password: 'student123',
     redirectTo: '/dashboard',
   },
   university: {
     icon: Building2,
     title: 'University Login',
     description: 'Manage student verifications and analytics',
-    email: 'university@skillsence.ai',
-    password: 'university123',
     redirectTo: '/university/dashboard',
   },
   recruiter: {
     icon: Briefcase,
     title: 'Recruiter Login',
     description: 'Find and verify top talent',
-    email: 'recruiter@skillsence.ai',
-    password: 'recruiter123',
     redirectTo: '/recruiter/dashboard',
   },
 };
@@ -85,6 +79,14 @@ export default function Login() {
         localStorage.setItem('refreshToken', data.refresh);
         localStorage.setItem('userRole', data.user.role);
         localStorage.setItem('user', JSON.stringify(data.user));
+        if (data?.user?.role !== role) {
+          localStorage.removeItem('accessToken');
+          localStorage.removeItem('refreshToken');
+          localStorage.removeItem('userRole');
+          localStorage.removeItem('user');
+          setError(`This account is not authorized for the ${role} portal.`);
+          return;
+        }
         navigate(config.redirectTo);
       } else {
         setError(data.error || 'Login failed');
@@ -156,14 +158,6 @@ export default function Login() {
                 Sign In
               </Button>
             </form>
-
-            <div className="mt-6 p-4 bg-muted/50 rounded-lg">
-              <h4 className="text-sm font-medium mb-2">Demo Credentials:</h4>
-              <div className="text-xs text-muted-foreground space-y-1">
-                <div>Email: {config.email}</div>
-                <div>Password: {config.password}</div>
-              </div>
-            </div>
 
             <div className="mt-4 text-center">
               <button

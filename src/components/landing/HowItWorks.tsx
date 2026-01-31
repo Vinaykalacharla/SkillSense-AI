@@ -27,11 +27,11 @@ export function HowItWorks({ steps }: { steps: Step[] }) {
           transition={{ duration: 0.6 }}
           className="text-center mb-16"
         >
-          <span className="text-sm font-medium text-primary uppercase tracking-wider">How It Works</span>
-          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mt-4 mb-6">
+          <span className="eyebrow-badge">How It Works</span>
+          <h2 className="section-title mt-6 mb-6">
             Three Steps to <span className="gradient-text">Verified Skills</span>
           </h2>
-          <p className="text-muted-foreground max-w-2xl mx-auto">
+          <p className="section-subtitle max-w-2xl mx-auto">
             Our streamlined process transforms raw evidence into verified credentials in minutes.
           </p>
         </motion.div>
@@ -49,9 +49,9 @@ export function HowItWorks({ steps }: { steps: Step[] }) {
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
               transition={{ duration: 0.6, delay: index * 0.2 }}
-              className="relative"
+              className="relative perspective-1000"
             >
-              <div className="glass-card p-8 text-center card-hover h-full">
+              <div className="glass-card p-8 text-center card-hover h-full tilt-card">
                 {/* Step Number */}
                 <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-gradient-to-br from-primary to-accent flex items-center justify-center text-sm font-bold text-primary-foreground">
                   {index + 1}

@@ -55,11 +55,11 @@ export function FeaturesSection({
           transition={{ duration: 0.6 }}
           className="text-center mb-16"
         >
-          <span className="text-sm font-medium text-accent uppercase tracking-wider">Features</span>
-          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mt-4 mb-6">
+          <span className="eyebrow-badge">Features</span>
+          <h2 className="section-title mt-6 mb-6">
             Everything You Need for <span className="gradient-text">Skill Verification</span>
           </h2>
-          <p className="text-muted-foreground max-w-2xl mx-auto">
+          <p className="section-subtitle max-w-2xl mx-auto">
             Comprehensive tools powered by cutting-edge AI to discover, verify, and showcase authentic talent.
           </p>
         </motion.div>
@@ -75,11 +75,11 @@ export function FeaturesSection({
           {dataTypes.map((type, index) => {
             const Icon = iconMap[type.icon] || Code;
             return (
-            <div key={index} className="glass px-4 py-2 rounded-full flex items-center gap-2">
-              <Icon className={`w-4 h-4 ${type.color}`} />
-              <span className="text-sm font-medium">{type.label}</span>
-            </div>
-          );
+              <div key={index} className="glass px-4 py-2 rounded-full flex items-center gap-2">
+                <Icon className={`w-4 h-4 ${type.color}`} />
+                <span className="text-xs font-semibold uppercase tracking-[0.2em]">{type.label}</span>
+              </div>
+            );
           })}
         </motion.div>
 
@@ -88,27 +88,26 @@ export function FeaturesSection({
           {features.map((feature, index) => {
             const Icon = iconMap[feature.icon] || Layers;
             return (
-            <motion.div
-              key={index}
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true }}
-              transition={{ duration: 0.6, delay: index * 0.1 }}
-              className="group"
-            >
-              <div className="glass-card p-6 h-full card-hover relative overflow-hidden">
-                {/* Gradient Glow on Hover */}
-                <div className={`absolute inset-0 bg-gradient-to-br ${feature.gradient} opacity-0 group-hover:opacity-5 transition-opacity duration-500`} />
-                
-                <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${feature.gradient} flex items-center justify-center mb-4`}>
-                  <Icon className="w-6 h-6 text-primary-foreground" />
-                </div>
+              <motion.div
+                key={index}
+                initial={{ opacity: 0, y: 30 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.6, delay: index * 0.1 }}
+                className="group perspective-1000"
+              >
+                <div className="glass-card p-6 h-full card-hover relative overflow-hidden tilt-card">
+                  <div className={`absolute inset-0 bg-gradient-to-br ${feature.gradient} opacity-0 group-hover:opacity-10 transition-opacity duration-500`} />
 
-                <h3 className="text-lg font-semibold mb-2">{feature.title}</h3>
-                <p className="text-muted-foreground text-sm">{feature.description}</p>
-              </div>
-            </motion.div>
-          );
+                  <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${feature.gradient} flex items-center justify-center mb-4`}>
+                    <Icon className="w-6 h-6 text-primary-foreground" />
+                  </div>
+
+                  <h3 className="text-lg font-semibold mb-2">{feature.title}</h3>
+                  <p className="text-muted-foreground text-sm">{feature.description}</p>
+                </div>
+              </motion.div>
+            );
           })}
         </div>
       </div>

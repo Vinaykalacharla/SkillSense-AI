@@ -1,4 +1,4 @@
-import { motion } from 'framer-motion';
+﻿import { motion } from 'framer-motion';
 import { Star, Quote } from 'lucide-react';
 
 type Testimonial = {
@@ -21,11 +21,11 @@ export function Testimonials({ testimonials }: { testimonials: Testimonial[] }) 
           transition={{ duration: 0.6 }}
           className="text-center mb-16"
         >
-          <span className="text-sm font-medium text-accent uppercase tracking-wider">Testimonials</span>
-          <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mt-4 mb-6">
+          <span className="eyebrow-badge">Testimonials</span>
+          <h2 className="section-title mt-6 mb-6">
             Loved by <span className="gradient-text">Thousands</span>
           </h2>
-          <p className="text-muted-foreground max-w-2xl mx-auto">
+          <p className="section-subtitle max-w-2xl mx-auto">
             See what students, recruiters, and universities are saying about SkillVerify.
           </p>
         </motion.div>
@@ -38,8 +38,9 @@ export function Testimonials({ testimonials }: { testimonials: Testimonial[] }) 
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true }}
               transition={{ duration: 0.6, delay: index * 0.2 }}
+              className="perspective-1000"
             >
-              <div className="glass-card p-6 h-full relative card-hover">
+              <div className="glass-card p-6 h-full relative card-hover tilt-card">
                 <Quote className="w-8 h-8 text-primary/20 absolute top-6 right-6" />
                 
                 {/* Rating */}
@@ -60,7 +61,7 @@ export function Testimonials({ testimonials }: { testimonials: Testimonial[] }) 
                   <div>
                     <div className="font-semibold">{testimonial.name}</div>
                     <div className="text-sm text-muted-foreground">
-                      {testimonial.role} • {testimonial.company}
+                      {testimonial.role} - {testimonial.company}
                     </div>
                   </div>
                 </div>
@@ -72,3 +73,4 @@ export function Testimonials({ testimonials }: { testimonials: Testimonial[] }) 
     </section>
   );
 }
+
