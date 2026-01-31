@@ -19,18 +19,21 @@ class User(AbstractUser):
 
     full_name = models.CharField(
         max_length=255,
+        null=True,
         blank=True,
         help_text=_('Full name')
     )
 
     gender = models.CharField(
         max_length=20,
+        null=True,
         blank=True,
         help_text=_('Gender')
     )
 
     phone_number = models.CharField(
         max_length=20,
+        null=True,
         blank=True,
         help_text=_('Phone number')
     )
@@ -55,16 +58,19 @@ class User(AbstractUser):
     )
     course = models.CharField(
         max_length=255,
+        null=True,
         blank=True,
         help_text=_('Course name')
     )
     branch = models.CharField(
         max_length=255,
+        null=True,
         blank=True,
         help_text=_('Branch or specialization')
     )
     year_of_study = models.CharField(
         max_length=20,
+        null=True,
         blank=True,
         help_text=_('Year of study')
     )
@@ -76,27 +82,33 @@ class User(AbstractUser):
         help_text=_('CGPA (Cumulative Grade Point Average)')
     )
     student_skills = models.TextField(
+        null=True,
         blank=True,
         help_text=_('Comma-separated list of skills')
     )
     github_link = models.URLField(
+        null=True,
         blank=True,
         help_text=_('GitHub profile URL')
     )
     leetcode_link = models.URLField(
+        null=True,
         blank=True,
         help_text=_('LeetCode profile URL')
     )
     linkedin_link = models.URLField(
+        null=True,
         blank=True,
         help_text=_('LinkedIn profile URL')
     )
     linkedin_headline = models.CharField(
         max_length=200,
+        null=True,
         blank=True,
         help_text=_('LinkedIn headline')
     )
     linkedin_about = models.TextField(
+        null=True,
         blank=True,
         help_text=_('LinkedIn about summary')
     )
@@ -116,18 +128,22 @@ class User(AbstractUser):
         help_text=_('LinkedIn certifications count')
     )
     codechef_link = models.URLField(
+        null=True,
         blank=True,
         help_text=_('CodeChef profile URL')
     )
     hackerrank_link = models.URLField(
+        null=True,
         blank=True,
         help_text=_('HackerRank profile URL')
     )
     codeforces_link = models.URLField(
+        null=True,
         blank=True,
         help_text=_('Codeforces profile URL')
     )
     gfg_link = models.URLField(
+        null=True,
         blank=True,
         help_text=_('GeeksforGeeks profile URL')
     )

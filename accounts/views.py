@@ -25,6 +25,15 @@ def _parse_int(value):
         return None
 
 
+def _parse_decimal(value):
+    if value in (None, ''):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _maybe_int(field_name, value):
     if field_name in ['linkedin_experience_count', 'linkedin_skill_count', 'linkedin_cert_count']:
         return _parse_int(value)
@@ -98,6 +107,59 @@ def _extract_first(pattern, text, flags=re.IGNORECASE):
     return match.group(1).strip() if match.groups() else match.group(0).strip()
 
 
+def _extract_full_name(text):
+    if not text:
+        return None
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
+        return None
+    candidates = []
+    for line in lines[:6]:
+        lower = line.lower()
+        if any(keyword in lower for keyword in ["resume", "curriculum vitae", "cv", "profile", "address"]):
+            continue
+        if "@" in line:
+            continue
+        if re.search(r"\d", line):
+            continue
+        words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", line)
+        if 2 <= len(words) <= 4:
+            candidates.append(" ".join(words))
+    if candidates:
+        return max(candidates, key=len)
+    for line in lines[:6]:
+        if re.search(r"[A-Za-z]", line) and "@" not in line and not re.search(r"\d", line):
+            return line
+    return None
+
+
+def _extract_year_of_study(text):
+    if not text:
+        return None
+    match = _extract_first(
+        r"\b(1st|2nd|3rd|4th|first|second|third|fourth)\s*(year|yr)\b", text
+    )
+    if match:
+        return match
+    match = _extract_first(r"\bSemester\s*([1-8])\b", text)
+    if match:
+        return f"Semester {match}"
+    return None
+
+
+def _extract_course(text):
+    if not text:
+        return None
+    course = _extract_first(
+        r"\b(B\.?Tech|B\.?E\.?|Bachelors?|M\.?Tech|M\.?E\.?|MCA|BCA|BSc|MSc|MBA)\b",
+        text,
+    )
+    if course:
+        return course
+    course = _extract_first(r"\b(Bachelor|Master)\s+of\s+[A-Za-z& ]{3,}\b", text)
+    return course
+
+
 def _extract_urls(text):
     url_pattern = r"(https?://[^\s)\]]+|www\.[^\s)\]]+|[a-z0-9.-]+\.[a-z]{2,}/[^\s)\]]+)"
     candidates = re.findall(url_pattern, text, flags=re.IGNORECASE)
@@ -155,8 +217,10 @@ def _extract_resume_fields(text):
     if not text:
         return fields
 
+    fields["full_name"] = _extract_full_name(text)
     fields["email"] = _extract_first(r"([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})", text)
     fields["phone_number"] = _extract_first(r"(\+?\d[\d\s\-()]{7,}\d)", text)
+    fields["year_of_study"] = _extract_year_of_study(text)
 
     urls = _extract_urls(text)
     for url in urls:
@@ -181,6 +245,8 @@ def _extract_resume_fields(text):
         fields["student_skills"] = ", ".join(skills)
 
     fields["cgpa"] = _extract_first(r"\bCGPA[:\s]*([0-9]\.?[0-9]{0,2})", text)
+    if not fields.get("cgpa"):
+        fields["cgpa"] = _extract_first(r"\bCGPA[:\s]*([0-9]\.?[0-9]{0,2})\s*/\s*10\b", text)
 
     education_lines = [
         line.strip()
@@ -190,12 +256,9 @@ def _extract_resume_fields(text):
     if education_lines and not fields.get("college"):
         fields["college"] = education_lines[0]
 
-    degree_match = _extract_first(
-        r"\b(B\.?Tech|B\.?E\.?|Bachelors?|M\.?Tech|M\.?E\.?|MCA|BCA|BSc|MSc|MBA)\b",
-        text,
-    )
-    if degree_match:
-        fields["course"] = degree_match
+    course_match = _extract_course(text)
+    if course_match:
+        fields["course"] = course_match
 
     branch_match = _extract_first(
         r"\b(Computer Science|Information Technology|Electronics|Electrical|Mechanical|Civil|Data Science|AI|Machine Learning|AI & ML|CSE|IT|ECE|EEE)\b",
@@ -228,7 +291,7 @@ def signup_view(request):
     course = request.data.get('course') or parsed_fields.get("course")
     branch = request.data.get('branch') or parsed_fields.get("branch")
     year_of_study = request.data.get('year_of_study')
-    cgpa = request.data.get('cgpa') or parsed_fields.get("cgpa")
+    cgpa = _parse_decimal(request.data.get('cgpa') or parsed_fields.get("cgpa"))
     student_skills = request.data.get('student_skills') or parsed_fields.get("student_skills")
     github_link = request.data.get('github_link') or parsed_fields.get("github_link")
     leetcode_link = request.data.get('leetcode_link') or parsed_fields.get("leetcode_link")
@@ -332,6 +395,11 @@ def signup_view(request):
             'scores': scores
         }, status=status.HTTP_201_CREATED)
     except Exception as e:
+        if os.environ.get("DJANGO_DEBUG_ERRORS", "0").lower() in {"1", "true", "yes"}:
+            return Response(
+                {'error': f'Failed to create user: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         return Response(
             {'error': 'Failed to create user'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
