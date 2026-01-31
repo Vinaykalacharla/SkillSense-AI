@@ -1,4 +1,6 @@
 import io
+import os
+import re
 from datetime import timedelta
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -28,6 +30,182 @@ def _maybe_int(field_name, value):
         return _parse_int(value)
     return value
 
+
+def _extract_text_from_resume(uploaded_file):
+    if not uploaded_file:
+        return ""
+    filename = (uploaded_file.name or "").lower()
+    _, ext = os.path.splitext(filename)
+    data = uploaded_file.read()
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+
+    if ext == ".pdf":
+        try:
+            from pdfminer.high_level import extract_text
+        except ImportError:
+            extract_text = None
+        if extract_text:
+            try:
+                return extract_text(io.BytesIO(data))
+            except Exception:
+                return ""
+        try:
+            import PyPDF2
+        except ImportError:
+            PyPDF2 = None
+        if PyPDF2:
+            try:
+                reader = PyPDF2.PdfReader(io.BytesIO(data))
+                return "\n".join(page.extract_text() or "" for page in reader.pages)
+            except Exception:
+                return ""
+        return ""
+    if ext == ".docx":
+        try:
+            import docx
+        except ImportError:
+            docx = None
+        if not docx:
+            return ""
+        try:
+            doc = docx.Document(io.BytesIO(data))
+            return "\n".join(p.text for p in doc.paragraphs)
+        except Exception:
+            return ""
+    if ext in {".txt", ".md", ".rtf"}:
+        try:
+            return data.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    return ""
+
+
+def _clean_resume_text(text):
+    if not text:
+        return ""
+    text = text.replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
+
+
+def _extract_first(pattern, text, flags=re.IGNORECASE):
+    match = re.search(pattern, text, flags)
+    if not match:
+        return None
+    return match.group(1).strip() if match.groups() else match.group(0).strip()
+
+
+def _extract_urls(text):
+    url_pattern = r"(https?://[^\s)\]]+|www\.[^\s)\]]+|[a-z0-9.-]+\.[a-z]{2,}/[^\s)\]]+)"
+    candidates = re.findall(url_pattern, text, flags=re.IGNORECASE)
+    normalized = []
+    for url in candidates:
+        cleaned = url.rstrip(".,;)")
+        if cleaned.startswith("www."):
+            cleaned = "https://" + cleaned
+        if not cleaned.startswith("http"):
+            cleaned = "https://" + cleaned
+        normalized.append(cleaned)
+    return normalized
+
+
+def _extract_skills(text):
+    if not text:
+        return []
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    skills = []
+    for idx, line in enumerate(lines):
+        if re.search(r"\bskills?\b", line, flags=re.IGNORECASE):
+            section = ""
+            if ":" in line:
+                section = line.split(":", 1)[1]
+            else:
+                section = ""
+            lookahead = []
+            for next_line in lines[idx + 1 : idx + 4]:
+                if re.search(r"^[A-Z\s]{4,}$", next_line):
+                    break
+                if ":" in next_line and re.search(r"\bexperience|education|projects?\b", next_line, flags=re.IGNORECASE):
+                    break
+                lookahead.append(next_line)
+            combined = " ".join([section] + lookahead)
+            tokens = re.split(r"[,\|•;/]\s*", combined)
+            for token in tokens:
+                cleaned = token.strip(" .")
+                if cleaned and len(cleaned) <= 40:
+                    skills.append(cleaned)
+            if skills:
+                break
+    seen = set()
+    unique = []
+    for skill in skills:
+        key = skill.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(skill)
+    return unique
+
+
+def _extract_resume_fields(text):
+    text = _clean_resume_text(text)
+    fields = {}
+    if not text:
+        return fields
+
+    fields["email"] = _extract_first(r"([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})", text)
+    fields["phone_number"] = _extract_first(r"(\+?\d[\d\s\-()]{7,}\d)", text)
+
+    urls = _extract_urls(text)
+    for url in urls:
+        lower = url.lower()
+        if "github.com" in lower and not fields.get("github_link"):
+            fields["github_link"] = url
+        elif "leetcode.com" in lower and not fields.get("leetcode_link"):
+            fields["leetcode_link"] = url
+        elif "linkedin.com" in lower and not fields.get("linkedin_link"):
+            fields["linkedin_link"] = url
+        elif "codechef.com" in lower and not fields.get("codechef_link"):
+            fields["codechef_link"] = url
+        elif "hackerrank.com" in lower and not fields.get("hackerrank_link"):
+            fields["hackerrank_link"] = url
+        elif "codeforces.com" in lower and not fields.get("codeforces_link"):
+            fields["codeforces_link"] = url
+        elif "geeksforgeeks.org" in lower and not fields.get("gfg_link"):
+            fields["gfg_link"] = url
+
+    skills = _extract_skills(text)
+    if skills:
+        fields["student_skills"] = ", ".join(skills)
+
+    fields["cgpa"] = _extract_first(r"\bCGPA[:\s]*([0-9]\.?[0-9]{0,2})", text)
+
+    education_lines = [
+        line.strip()
+        for line in text.split("\n")
+        if re.search(r"\b(university|college|institute|school)\b", line, flags=re.IGNORECASE)
+    ]
+    if education_lines and not fields.get("college"):
+        fields["college"] = education_lines[0]
+
+    degree_match = _extract_first(
+        r"\b(B\.?Tech|B\.?E\.?|Bachelors?|M\.?Tech|M\.?E\.?|MCA|BCA|BSc|MSc|MBA)\b",
+        text,
+    )
+    if degree_match:
+        fields["course"] = degree_match
+
+    branch_match = _extract_first(
+        r"\b(Computer Science|Information Technology|Electronics|Electrical|Mechanical|Civil|Data Science|AI|Machine Learning|AI & ML|CSE|IT|ECE|EEE)\b",
+        text,
+    )
+    if branch_match:
+        fields["branch"] = branch_match
+
+    return fields
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def signup_view(request):
@@ -38,29 +216,39 @@ def signup_view(request):
     email = request.data.get('email')
     password = request.data.get('password')
     role = request.data.get('role', 'student')
+    resume_file = request.FILES.get('resume') or request.data.get('resume')
+
+    parsed_fields = _extract_resume_fields(_extract_text_from_resume(resume_file))
 
     # Student-specific fields
-    full_name = request.data.get('full_name')
+    full_name = request.data.get('full_name') or parsed_fields.get("full_name")
     gender = request.data.get('gender')
-    phone_number = request.data.get('phone_number')
-    college = request.data.get('college')
-    course = request.data.get('course')
-    branch = request.data.get('branch')
+    phone_number = request.data.get('phone_number') or parsed_fields.get("phone_number")
+    college = request.data.get('college') or parsed_fields.get("college")
+    course = request.data.get('course') or parsed_fields.get("course")
+    branch = request.data.get('branch') or parsed_fields.get("branch")
     year_of_study = request.data.get('year_of_study')
-    cgpa = request.data.get('cgpa')
-    student_skills = request.data.get('student_skills')
-    github_link = request.data.get('github_link')
-    leetcode_link = request.data.get('leetcode_link')
-    linkedin_link = request.data.get('linkedin_link')
+    cgpa = request.data.get('cgpa') or parsed_fields.get("cgpa")
+    student_skills = request.data.get('student_skills') or parsed_fields.get("student_skills")
+    github_link = request.data.get('github_link') or parsed_fields.get("github_link")
+    leetcode_link = request.data.get('leetcode_link') or parsed_fields.get("leetcode_link")
+    linkedin_link = request.data.get('linkedin_link') or parsed_fields.get("linkedin_link")
     linkedin_headline = request.data.get('linkedin_headline')
     linkedin_about = request.data.get('linkedin_about')
     linkedin_experience_count = _parse_int(request.data.get('linkedin_experience_count'))
     linkedin_skill_count = _parse_int(request.data.get('linkedin_skill_count'))
     linkedin_cert_count = _parse_int(request.data.get('linkedin_cert_count'))
-    codechef_link = request.data.get('codechef_link')
-    hackerrank_link = request.data.get('hackerrank_link')
-    codeforces_link = request.data.get('codeforces_link')
-    gfg_link = request.data.get('gfg_link')
+    codechef_link = request.data.get('codechef_link') or parsed_fields.get("codechef_link")
+    hackerrank_link = request.data.get('hackerrank_link') or parsed_fields.get("hackerrank_link")
+    codeforces_link = request.data.get('codeforces_link') or parsed_fields.get("codeforces_link")
+    gfg_link = request.data.get('gfg_link') or parsed_fields.get("gfg_link")
+
+    email = email or parsed_fields.get("email")
+    if not username:
+        if email:
+            username = email.split("@")[0]
+        elif full_name:
+            username = re.sub(r"\s+", "", full_name).lower()
 
     if not username or not email or not password:
         return Response(

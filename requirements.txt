@@ -6,3 +6,6 @@ django-cors-headers
 Pillow
 reportlab
 matplotlib
+pdfminer.six
+python-docx
+PyPDF2

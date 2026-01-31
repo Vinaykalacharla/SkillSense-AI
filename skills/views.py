@@ -24,6 +24,7 @@ from .models import (
     AIInterviewSession,
     CodeAnalysisReport,
     MediaUpload,
+    RepoFileSnapshot,
 )
 from .serializers import (
     SkillSerializer,
@@ -37,6 +38,39 @@ from content.models import ContentBlock
 
 def _bool(value):
     return bool(value and str(value).strip())
+
+
+def _require_role(user, role):
+    return user and getattr(user, "role", None) == role
+
+
+def _repo_cache_enabled():
+    return os.environ.get("AI_REPO_CACHE_ENABLED", "true").strip().lower() in {"1", "true", "yes"}
+
+
+def _repo_cache_max_chars():
+    try:
+        return int(os.environ.get("AI_REPO_CACHE_CHARS", "20000"))
+    except (TypeError, ValueError):
+        return 20000
+
+
+def _store_repo_file_snapshot(user, repo_url, path, sha, content, size, lines):
+    if not user or not _repo_cache_enabled():
+        return
+    max_chars = _repo_cache_max_chars()
+    stored_content = content if max_chars <= 0 else (content or "")[:max_chars]
+    RepoFileSnapshot.objects.update_or_create(
+        user=user,
+        repo_url=repo_url,
+        path=path,
+        sha=sha,
+        defaults={
+            "content": stored_content,
+            "size": size or 0,
+            "lines": lines or 0,
+        },
+    )
 
 
 def _build_verification_steps(user):
@@ -346,6 +380,36 @@ def _ai_signal_from_text(text):
     return 0
 
 
+def _safe_json_loads(text):
+    if not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    stripped = text.strip()
+    if "```" in stripped:
+        parts = stripped.split("```")
+        for idx in range(1, len(parts), 2):
+            candidate = parts[idx].strip()
+            if "\n" in candidate:
+                candidate = candidate.split("\n", 1)[1].strip()
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+    for start_char, end_char in (("{", "}"), ("[", "]")):
+        start = stripped.find(start_char)
+        end = stripped.rfind(end_char)
+        if start != -1 and end != -1 and end > start:
+            candidate = stripped[start:end + 1]
+            try:
+                return json.loads(candidate)
+            except Exception:
+                continue
+    return None
+
+
 def _ai_signal_from_commits(commits):
     score = 0
     for commit in commits:
@@ -409,6 +473,7 @@ def _openai_chat_json(system_content, user_content, max_tokens=700):
         ],
         "temperature": 0.2,
         "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
     }
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -420,7 +485,7 @@ def _openai_chat_json(system_content, user_content, max_tokens=700):
         return None
     try:
         content = (((data or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
-        return json.loads(content)
+        return _safe_json_loads(content)
     except Exception:
         return None
 
@@ -495,7 +560,7 @@ def _openai_score_code_chunk(path, chunk, chunk_index, total_chunks):
     }
 
 
-def _analyze_repo_ai_generated(owner, repo):
+def _analyze_repo_ai_generated(owner, repo, user=None):
     if not os.environ.get("OPENAI_API_KEY"):
         return {"error": "OPENAI_API_KEY not configured."}
     headers = _github_headers()
@@ -537,6 +602,8 @@ def _analyze_repo_ai_generated(owner, repo):
     weighted_score = 0
     total_lines = 0
 
+    repo_html_url = repo_data.get("html_url")
+
     for item in files:
         sha = item.get("sha")
         path = item.get("path")
@@ -546,6 +613,15 @@ def _analyze_repo_ai_generated(owner, repo):
         if content is None:
             return {"error": f"Failed to load {path}."}
         lines = content.count("\n") + 1 if content else 0
+        _store_repo_file_snapshot(
+            user=user,
+            repo_url=repo_html_url or repo_url,
+            path=path,
+            sha=sha,
+            content=content,
+            size=item.get("size", 0),
+            lines=lines,
+        )
         total_lines += lines
         chunks = _chunk_text(content, chunk_chars)
         if not chunks:
@@ -663,6 +739,30 @@ def _select_questions_for_user(user, total=10):
     random.shuffle(chosen)
     return chosen[:total]
 
+
+def _intro_questions(user):
+    name_hint = user.full_name or "your full name"
+    return [
+        {
+            "id": "intro-1",
+            "question": "Welcome! Please tell me your full name and the role you are targeting.",
+            "difficulty": "easy",
+            "tags": ["intro"],
+        },
+        {
+            "id": "intro-2",
+            "question": "Give a brief introduction about yourself, including your current education or experience.",
+            "difficulty": "easy",
+            "tags": ["intro"],
+        },
+        {
+            "id": "intro-3",
+            "question": "Walk me through one project you are proud of and your specific contributions.",
+            "difficulty": "easy",
+            "tags": ["intro"],
+        },
+    ]
+
 def _generate_ai_questions(user, total=10):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -673,11 +773,11 @@ def _generate_ai_questions(user, total=10):
     prompt = {
         "role": "user",
         "content": (
-            "Generate 10 technical interview questions tailored to this user skill list: "
+            f"Generate {total} technical interview questions tailored to this user skill list: "
             f"{', '.join(skills) if skills else 'general software engineering'}. "
-            "Return ONLY a JSON array of 10 objects with keys: question, difficulty, tags. "
+            f"Return ONLY a JSON array of {total} objects with keys: question, difficulty, tags. "
             "difficulty must be one of: easy, medium, hard. "
-            "Use 3 easy, 4 medium, 3 hard. Keep questions short."
+            "Keep questions short."
         ),
     }
     payload = {
@@ -699,9 +799,9 @@ def _generate_ai_questions(user, total=10):
         return None
     try:
         content = (((data or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
-        parsed = json.loads(content)
+        parsed = _safe_json_loads(content)
     except Exception:
-        return None
+        parsed = None
 
     if not isinstance(parsed, list):
         return None
@@ -728,10 +828,12 @@ def _generate_ai_questions(user, total=10):
 
 
 def _select_or_generate_questions(user, total=10):
-    questions = _generate_ai_questions(user, total=total)
+    intro = _intro_questions(user)
+    technical_total = max(0, total - len(intro))
+    questions = _generate_ai_questions(user, total=technical_total)
     if questions:
-        return questions
-    return _select_questions_for_user(user, total=total)
+        return intro + questions
+    return intro + _select_questions_for_user(user, total=technical_total)
 
 
 def _score_answer(text, difficulty):
@@ -771,10 +873,72 @@ def _build_interview_metrics(answers, questions, score):
 
 
 def _build_interview_feedback(answer):
+    text = (answer.get("answer") or "").strip()
     word_count = answer.get("word_count", 0)
+    filler = sum(text.lower().count(word) for word in ["um", "uh", "like", "basically", "actually"])
+    clarity_score = max(0, min(100, int(30 + word_count * 2 - filler * 5)))
+    sentiment_score = 0
+    for word in ["confident", "achieved", "improved", "delivered", "led", "built", "optimized", "reduced"]:
+        if word in text.lower():
+            sentiment_score += 1
+    sentiment_label = "positive" if sentiment_score >= 2 else "neutral"
+    feedback = []
     if word_count < 20:
-        return {"type": "improvement", "text": "Add more specifics and concrete examples."}
-    return {"type": "strength", "text": "Good structure with clear technical context."}
+        feedback.append({"type": "improvement", "text": "Expand with specifics and measurable outcomes."})
+    else:
+        feedback.append({"type": "strength", "text": "Clear structure with solid context."})
+    if clarity_score < 55:
+        feedback.append({"type": "improvement", "text": "Slow down and reduce filler words for clarity."})
+    else:
+        feedback.append({"type": "strength", "text": "Clarity and pacing are strong."})
+    if sentiment_label == "positive":
+        feedback.append({"type": "strength", "text": "Confident, action-oriented tone."})
+    else:
+        feedback.append({"type": "improvement", "text": "Add stronger action verbs to increase impact."})
+    return feedback
+
+
+def _build_interview_summary(answers):
+    if not answers:
+        return {"strengths": ["Willing to engage in the interview."], "improvements": ["Provide more detail."]}
+    avg_words = sum(a.get("word_count", 0) for a in answers) / max(1, len(answers))
+    strengths = []
+    improvements = []
+    if avg_words >= 35:
+        strengths.append("Strong detail and context in responses.")
+    else:
+        improvements.append("Add more depth with examples and metrics.")
+    if any("project" in (a.get("answer") or "").lower() for a in answers):
+        strengths.append("Good use of project-based explanations.")
+    else:
+        improvements.append("Reference a concrete project to back up your claims.")
+    if not strengths:
+        strengths.append("Consistent participation across questions.")
+    if not improvements:
+        improvements.append("Keep answers concise and structured.")
+    return {"strengths": strengths, "improvements": improvements}
+
+
+def _generate_followup_question(answer, current_question):
+    prompt = (
+        "Generate one short follow-up interview question based on this candidate answer. "
+        "Return JSON with keys: question, difficulty. difficulty must be easy or medium."
+    )
+    user = f"Question: {current_question}\nAnswer: {answer}\n"
+    result = _openai_chat_json(prompt, user, max_tokens=120)
+    if isinstance(result, dict):
+        question = (result.get("question") or "").strip()
+        difficulty = (result.get("difficulty") or "easy").strip().lower()
+        if question and difficulty in {"easy", "medium"}:
+            return {"id": f"followup-{random.randint(1000, 9999)}", "question": question, "difficulty": difficulty, "tags": ["followup"]}
+    if len(answer.split()) < 25:
+        return {
+            "id": f"followup-{random.randint(1000, 9999)}",
+            "question": "Can you add more detail and a concrete example to support that?",
+            "difficulty": "easy",
+            "tags": ["followup"],
+        }
+    return None
 
 
 def _build_interview_tips(answers):
@@ -805,7 +969,7 @@ def _interview_state_payload(session):
         "score": score_pct,
     }
 
-def _flag_ai_generated_repos(owner):
+def _flag_ai_generated_repos(owner, user=None):
     headers = _github_headers()
     repos_url = f"https://api.github.com/users/{owner}/repos?per_page=100&sort=updated"
     try:
@@ -819,7 +983,7 @@ def _flag_ai_generated_repos(owner):
             repo_name = repo.get("name")
             if not repo_name:
                 continue
-            analysis = _analyze_repo_ai_generated(owner, repo_name)
+            analysis = _analyze_repo_ai_generated(owner, repo_name, user=user)
             if not analysis:
                 continue
             if analysis.get("error"):
@@ -885,9 +1049,12 @@ def recommendations_view(request):
 def ai_generated_repos_view(request):
     owner = _extract_github_username(request.user.github_link)
     if not owner:
-        return Response({'items': []})
-    items = _flag_ai_generated_repos(owner)
-    return Response({'items': items})
+        return Response({'items': [], 'analyzed_at': None})
+    items = _flag_ai_generated_repos(owner, user=request.user)
+    analyzed_at = timezone.now()
+    request.user.last_analyzed_at = analyzed_at
+    request.user.save(update_fields=["last_analyzed_at"])
+    return Response({'items': items, 'analyzed_at': analyzed_at.isoformat()})
 
 
 @api_view(['GET'])
@@ -1212,6 +1379,10 @@ def ai_interview_action_view(request):
 
         session.score = (session.score or 0) + points
 
+        followup = _generate_followup_question(message, current.get("question"))
+        if followup:
+            questions.insert(index + 1, followup)
+
         if index + 1 < len(questions):
             next_q = questions[index + 1]
             transcript.append({
@@ -1222,23 +1393,30 @@ def ai_interview_action_view(request):
             })
             session.current_index = index + 1
         else:
+            summary = _build_interview_summary(answers)
             session.status = 'completed'
             session.completed_at = timezone.now()
             transcript.append({
                 'speaker': 'AI',
-                'text': 'Interview completed. Your special score is ready.',
+                'text': (
+                    "Interview completed. Summary:\n"
+                    f"Strengths: {', '.join(summary['strengths'])}. "
+                    f"Improvements: {', '.join(summary['improvements'])}."
+                ),
                 'difficulty': 'summary',
                 'question_index': index,
             })
 
         session.answers = answers
+        session.questions = questions
         session.transcript = transcript
         session.metrics = _build_interview_metrics(answers, questions, session.score)
-        session.feedback = [_build_interview_feedback(answers[-1])]
+        session.feedback = _build_interview_feedback(answers[-1])
         session.tips = _build_interview_tips(answers)
         session.save(update_fields=[
             'answers',
             'transcript',
+            'questions',
             'metrics',
             'feedback',
             'tips',
@@ -1273,6 +1451,8 @@ def ai_interview_action_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def recruiter_dashboard_view(request):
+    if not _require_role(request.user, 'recruiter'):
+        return Response({'error': 'Unauthorized'}, status=403)
     students = User.objects.filter(role='student').select_related()
     candidates = []
     for student in students[:20]:
@@ -1301,6 +1481,8 @@ def recruiter_dashboard_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def university_dashboard_view(request):
+    if not _require_role(request.user, 'university'):
+        return Response({'error': 'Unauthorized'}, status=403)
     students = User.objects.filter(role='student')
     totals = students.count()
     avg_score = ScoreCard.objects.filter(score_type='placement_ready').aggregate(avg=Avg('score'))['avg'] or 0
@@ -1328,24 +1510,64 @@ def code_analysis_view(request):
             owner = _extract_github_username(request.user.github_link)
         if not owner or not repo_name:
             return Response({'error': 'Valid GitHub repository URL is required'}, status=400)
-        try:
-            analysis = _analyze_repo(owner, repo_name)
-        except Exception:
-            analysis = None
+        analysis = None
+        ai_error = None
+        if os.environ.get("OPENAI_API_KEY"):
+            try:
+                analysis = _analyze_repo_ai_generated(owner, repo_name, user=request.user)
+            except Exception:
+                analysis = None
+            if isinstance(analysis, dict) and analysis.get("error"):
+                ai_error = analysis.get("error")
+                analysis = None
+        else:
+            ai_error = "OPENAI_API_KEY not configured."
+
         if not analysis:
-            return Response({'error': 'Unable to analyze repository'}, status=400)
+            return Response({'error': ai_error or 'Unable to analyze repository'}, status=400)
+
+        metrics = {
+            "ai_generated": analysis.get("ai_generated"),
+            "ai_confidence": analysis.get("ai_confidence", 0),
+            "languages": analysis.get("languages", []),
+            "files_analyzed": analysis.get("files_analyzed", 0),
+            "lines_analyzed": analysis.get("lines_analyzed", 0),
+        }
+        top_files = analysis.get("top_ai_files") or []
+        if isinstance(top_files, list):
+            formatted = []
+            for item in top_files:
+                if isinstance(item, dict):
+                    path = item.get("path") or "unknown"
+                    score = item.get("score", 0)
+                    label = item.get("label")
+                    suffix = f"{score}" if label is None else f"{score} ({label})"
+                    formatted.append(f"{path} - {suffix}")
+                else:
+                    formatted.append(str(item))
+            if formatted:
+                metrics["top_ai_files"] = formatted
+
         report, _ = CodeAnalysisReport.objects.update_or_create(
             user=request.user,
             repo_url=analysis['repo_url'],
             defaults={
-                'summary': analysis['description'],
-                'score': analysis['score'],
-                'metrics': analysis['metrics'],
+                'summary': 'AI-generated likelihood analysis.',
+                'score': metrics["ai_confidence"],
+                'metrics': metrics,
                 'status': 'completed',
             },
         )
-        analysis['id'] = report.id
-        return Response(analysis)
+        return Response({
+            "id": report.id,
+            "repo_name": analysis.get("repo_name"),
+            "repo_url": analysis.get("repo_url"),
+            "description": report.summary,
+            "score": report.score,
+            "metrics": report.metrics,
+            "status": report.status,
+            "created_at": report.created_at.isoformat(),
+        })
 
     items = []
     for report in CodeAnalysisReport.objects.filter(user=request.user):
