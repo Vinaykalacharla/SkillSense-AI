@@ -1,65 +1,110 @@
-# Welcome to Skillsence AI
+# Skillsence AI (SkillSense-AI)
 
-## Project info
+Skillsence AI is a full‑stack platform for student skill verification and interview readiness. It combines a React + Vite frontend with a Django REST backend to analyze profiles, score skills, and run AI‑assisted interviews.
 
-**URL**: https://skillsence.ai
+## Highlights
 
-## How can I edit this code?
+- Resume‑driven onboarding that auto‑fills profile details.
+- Skill scoring across coding, communication, authenticity, and placement readiness.
+- AI interview simulator with adaptive follow‑ups and feedback.
+- Platform insights for students, recruiters, and universities.
+- Skill passport PDF reports and performance trends.
 
-There are several ways of editing your application.
+## Tech Stack
 
-**Use your preferred IDE**
+Frontend:
+- React + TypeScript (Vite)
+- Tailwind CSS + shadcn‑ui
 
-Clone this repo and push changes.
+Backend:
+- Django + Django REST Framework
+- SimpleJWT for auth
+- SQLite (default local)
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+## Features
 
-Follow these steps:
+- **Student registration** with resume parsing (PDF/DOCX/TXT).
+- **AI interview** sessions with real‑time feedback, metrics, and tips.
+- **Skill scoring** based on linked platforms and interview responses.
+- **Dashboards** for students, recruiters, and universities.
+- **Reports**: skill passport PDF + score summaries.
+
+## Project Structure
+
+- `src/` – React frontend
+- `skillsence/` – Django project settings
+- `accounts/` – auth + profile APIs
+- `skills/` – scoring, interview, skill passport, media endpoints
+- `templates/`, `static/`, `staticfiles/` – Django assets
+
+## Getting Started (Local)
+
+### Backend (Django)
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+# Create and activate a virtual environment
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+# Install dependencies
+pip install -r requirements.txt
 
-# Step 3: Install the necessary dependencies.
-npm i
+# Apply migrations
+python manage.py migrate
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+# Run backend
+python manage.py runserver
+```
+
+Backend runs at `http://127.0.0.1:8000`.
+
+### Frontend (Vite)
+
+```sh
+# Install dependencies
+npm install
+
+# Start frontend
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+Frontend runs at `http://127.0.0.1:5173` (default Vite port).
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Environment Variables
 
-**Use GitHub Codespaces**
+Create a `.env.local` (frontend) or set env vars in your shell for the backend.
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+Backend (Django):
+- `OPENAI_API_KEY` – enables AI question generation and follow‑ups.
+- `OPENAI_MODEL` – default: `gpt-4o-mini`.
+- `OPENAI_API_BASE` – optional, default `https://api.openai.com/v1`.
+- `GITHUB_TOKEN` – optional for GitHub analysis.
+- `AI_REPO_CACHE_ENABLED` – default `true`.
+- `AI_REPO_CACHE_CHARS` – repo snapshot limit, default `20000`.
+- `AI_REPO_CHUNK_CHARS` – chunk size for code analysis, default `6000`.
 
-## What technologies are used for this project?
+## Key API Endpoints
 
-This project is built with:
+- `POST /api/accounts/signup/` – register user
+- `POST /api/accounts/login/` – login
+- `GET /api/accounts/profile/` – profile
+- `PATCH /api/accounts/profile/` – update profile
+- `GET /api/skills/ai-interview/` – interview session state
+- `POST /api/skills/ai-interview/action/` – start/respond/finish interview
+- `GET /api/skills/skill-passport/pdf/` – PDF export
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## AI Interview Flow
 
-## How can I deploy this project?
+- AI asks intro questions first, then technical questions.
+- Follow‑ups adapt to your last response (if `OPENAI_API_KEY` is set).
+- Metrics and feedback update after each answer.
+- End‑of‑interview summary highlights strengths and improvements.
 
-Deploy using your preferred hosting service.
+## Deployment
 
-## Can I connect a custom domain to my project?
+Deploy frontend with any static host (Vercel, Netlify, etc.) and backend with a Django‑friendly host (Render, Railway, EC2, etc.). Configure environment variables on the backend host.
 
-Yes, you can!
+## License
 
-Configure your domain with your hosting provider.
+Add your license here.
