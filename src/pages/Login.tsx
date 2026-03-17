@@ -89,7 +89,13 @@ export default function Login() {
         }
         navigate(config.redirectTo);
       } else {
-        setError(data.error || 'Login failed');
+        if (data?.approval_status === 'pending') {
+          setError('Your account is pending admin approval. Try again after approval.');
+        } else if (data?.approval_status === 'rejected') {
+          setError(data.error || 'Your account request was rejected. Contact support or resubmit.');
+        } else {
+          setError(data.error || 'Login failed');
+        }
       }
     } catch (error) {
       setError('Network error. Please try again.');
@@ -176,6 +182,17 @@ export default function Login() {
                   className="text-sm text-primary hover:text-primary/90"
                 >
                   New here? Create a student account
+                </button>
+              </div>
+            )}
+
+            {(role === 'recruiter' || role === 'university') && (
+              <div className="mt-4 text-center">
+                <button
+                  onClick={() => navigate(`/${role}/register`)}
+                  className="text-sm text-primary hover:text-primary/90"
+                >
+                  Need access? Request a {role} account
                 </button>
               </div>
             )}

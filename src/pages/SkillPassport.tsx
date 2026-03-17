@@ -1,8 +1,10 @@
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 import { DashboardSidebar } from '@/components/dashboard/Sidebar';
 import {
   BadgeCheck,
   Download,
+  FileText,
   Share2,
   QrCode,
   Shield,
@@ -24,8 +26,26 @@ import {
   Tooltip,
 } from 'recharts';
 import { useEffect, useState } from 'react';
+import { buildApiUrl } from '@/lib/api';
+
+interface EvidenceItem {
+  source: string;
+  title: string;
+  detail: string;
+  url?: string;
+  created_at?: string | null;
+}
+
+interface VerifiedSkill {
+  name: string;
+  level: string;
+  evidence: number;
+  verified: boolean;
+  evidence_items: EvidenceItem[];
+}
 
 export default function SkillPassport() {
+  const navigate = useNavigate();
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null);
   const [profile, setProfile] = useState<{
     full_name?: string;
@@ -35,9 +55,7 @@ export default function SkillPassport() {
   } | null>(null);
   const [radarData, setRadarData] = useState<{ skill: string; level: number }[]>([]);
   const [barData, setBarData] = useState<{ name: string; score: number }[]>([]);
-  const [verifiedSkills, setVerifiedSkills] = useState<
-    { name: string; level: string; evidence: number; verified: boolean }[]
-  >([]);
+  const [verifiedSkills, setVerifiedSkills] = useState<VerifiedSkill[]>([]);
   const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
@@ -46,7 +64,7 @@ export default function SkillPassport() {
       return;
     }
 
-    fetch('http://127.0.0.1:8000/api/accounts/profile/', {
+    fetch(buildApiUrl('/api/accounts/profile/'), {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -55,7 +73,7 @@ export default function SkillPassport() {
       .then((data) => setProfile(data?.user || null))
       .catch(() => setProfile(null));
 
-    fetch('http://127.0.0.1:8000/api/skills/skill-passport/', {
+    fetch(buildApiUrl('/api/skills/skill-passport/'), {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -79,7 +97,7 @@ export default function SkillPassport() {
       return;
     }
     setDownloading(true);
-    fetch('http://127.0.0.1:8000/api/skills/skill-passport/pdf/', {
+    fetch(buildApiUrl('/api/skills/skill-passport/pdf/'), {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -126,6 +144,10 @@ export default function SkillPassport() {
                 <Button variant="outline">
                   <Share2 className="w-4 h-4 mr-2" />
                   Share
+                </Button>
+                <Button variant="outline" onClick={() => navigate('/dashboard/resume-builder')}>
+                  <FileText className="w-4 h-4 mr-2" />
+                  Resume Builder
                 </Button>
                 <Button variant="default" onClick={handleDownload} disabled={downloading}>
                   <Download className="w-4 h-4 mr-2" />
@@ -306,7 +328,45 @@ export default function SkillPassport() {
                         className="px-4 pb-4 border-t border-border/50"
                       >
                         <div className="pt-4 space-y-3 text-sm text-muted-foreground">
-                          Evidence will appear once uploads and platform analysis are complete.
+                          {skill.evidence_items.length === 0 ? (
+                            <div>No evidence attached yet.</div>
+                          ) : (
+                            skill.evidence_items.map((item, itemIndex) => {
+                              const isExternal = Boolean(item.url?.startsWith('http'));
+                              return (
+                                <div
+                                  key={`${skill.name}-${item.source}-${itemIndex}`}
+                                  className="rounded-2xl border border-border/60 bg-card/50 p-4"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <div className="font-medium text-foreground">{item.title}</div>
+                                      <div className="mt-1">{item.detail}</div>
+                                      {item.created_at && (
+                                        <div className="mt-2 text-xs text-muted-foreground">
+                                          {new Date(item.created_at).toLocaleString()}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                                      {item.source}
+                                    </span>
+                                  </div>
+                                  {item.url && (
+                                    <a
+                                      href={item.url}
+                                      target={isExternal ? '_blank' : undefined}
+                                      rel={isExternal ? 'noreferrer' : undefined}
+                                      className="mt-3 inline-flex items-center gap-2 text-primary hover:underline"
+                                    >
+                                      Open source
+                                      <ExternalLink className="h-4 w-4" />
+                                    </a>
+                                  )}
+                                </div>
+                              );
+                            })
+                          )}
                         </div>
                       </motion.div>
                     )}

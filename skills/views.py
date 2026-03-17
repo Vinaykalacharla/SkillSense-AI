@@ -1,19 +1,23 @@
 from datetime import timedelta
+import csv
 import io
 import math
 import json
 import os
 import base64
+import re
+import textwrap
 import urllib.request
 import urllib.error
 from urllib.parse import urlparse
 import random
+from django.db import transaction
 from django.db.models import Avg, Count
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.utils import timezone
-from django.http import HttpResponse
+from django.http import FileResponse, HttpResponse
 
 from .models import (
     Skill,
@@ -21,10 +25,20 @@ from .models import (
     ScoreCard,
     VerificationStep,
     ScoreSnapshot,
+    Document,
+    InterviewSchedule,
     AIInterviewSession,
     CodeAnalysisReport,
     MediaUpload,
+    Notification,
+    PlacementDrive,
+    ProjectSubmission,
+    RecruiterCandidatePipeline,
+    RecruiterJob,
+    RecruiterSavedSearch,
     RepoFileSnapshot,
+    InterventionRecord,
+    UniversityBatchUpload,
 )
 from .serializers import (
     SkillSerializer,
@@ -42,6 +56,400 @@ def _bool(value):
 
 def _require_role(user, role):
     return user and getattr(user, "role", None) == role
+
+
+def _score_mean(values):
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 1)
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_string_list(raw_value):
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, list):
+        items = raw_value
+    elif isinstance(raw_value, str):
+        text = raw_value.strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                loaded = json.loads(text)
+                if isinstance(loaded, list):
+                    items = loaded
+                else:
+                    items = [text]
+            except json.JSONDecodeError:
+                items = text.replace("\n", ",").replace(";", ",").split(",")
+        else:
+            items = text.replace("\n", ",").replace(";", ",").split(",")
+    else:
+        items = [raw_value]
+
+    cleaned = []
+    seen = set()
+    for item in items:
+        normalized = str(item or "").strip()
+        if not normalized:
+            continue
+        dedupe_key = normalized.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        cleaned.append(normalized)
+    return cleaned
+
+
+def _tokenize_match_text(text):
+    if not text:
+        return set()
+    tokens = re.findall(r"[a-z0-9+#.]{2,}", str(text).lower())
+    stopwords = {
+        "and", "the", "for", "with", "from", "that", "this", "have", "will", "your",
+        "role", "team", "work", "years", "year", "using", "build", "built", "into",
+        "about", "need", "plus", "more", "must", "able", "good", "strong", "skills",
+        "experience", "candidate", "student", "project", "projects", "company",
+    }
+    return {token for token in tokens if token not in stopwords}
+
+
+def _candidate_match_corpus(student, candidate_payload=None):
+    payload = candidate_payload or _student_summary_payload(student)
+    parts = [
+        student.student_skills or "",
+        student.linkedin_headline or "",
+        student.linkedin_about or "",
+        " ".join(skill.get("name", "") for skill in payload.get("skills", [])),
+        " ".join(payload.get("highlights", [])),
+    ]
+    latest_report = student.code_analysis_reports.filter(status='completed').first()
+    if latest_report:
+        parts.extend([latest_report.summary or "", latest_report.repo_url or ""])
+    latest_submission = student.submissions.first()
+    if latest_submission:
+        parts.extend([latest_submission.title or "", latest_submission.description or "", latest_submission.repo_url or ""])
+    latest_interview = student.ai_interviews.filter(status='completed').first()
+    if latest_interview:
+        answers = latest_interview.answers or []
+        parts.extend(answer.get("answer", "") for answer in answers[:5] if isinstance(answer, dict))
+    return " ".join(filter(None, parts))
+
+
+def _job_tokens(job):
+    return _tokenize_match_text(
+        " ".join(
+            [
+                job.title or "",
+                job.description or "",
+                " ".join(_normalize_string_list(job.required_skills)),
+                " ".join(_normalize_string_list(job.preferred_skills)),
+            ]
+        )
+    )
+
+
+def _semantic_overlap(job, student, candidate_payload=None):
+    candidate_tokens = _tokenize_match_text(_candidate_match_corpus(student, candidate_payload))
+    job_tokens = _job_tokens(job)
+    if not job_tokens:
+        return {
+            "score": 0,
+            "matched_keywords": [],
+            "missing_keywords": [],
+        }
+    matched = sorted(job_tokens & candidate_tokens)
+    missing = sorted(job_tokens - candidate_tokens)
+    score = round((len(matched) / max(1, len(job_tokens))) * 100)
+    return {
+        "score": score,
+        "matched_keywords": matched[:8],
+        "missing_keywords": missing[:8],
+    }
+
+
+def _create_notification(user, title, message, category="system", link="", metadata=None):
+    if not user:
+        return None
+    return Notification.objects.create(
+        user=user,
+        title=title,
+        message=message,
+        category=category,
+        link=link,
+        metadata=metadata or {},
+    )
+
+
+def _notification_payload(notification):
+    return {
+        "id": notification.id,
+        "title": notification.title,
+        "message": notification.message,
+        "category": notification.category,
+        "link": notification.link,
+        "metadata": notification.metadata or {},
+        "read": bool(notification.read_at),
+        "created_at": notification.created_at.isoformat() if notification.created_at else None,
+    }
+
+
+def _bootstrap_notifications_for_user(user):
+    if Notification.objects.filter(user=user).exists():
+        return
+
+    if _require_role(user, "student"):
+        _create_notification(
+            user,
+            "Complete your passport",
+            "Add more verified evidence to strengthen your skill passport.",
+            category="student",
+            link="/dashboard/passport",
+        )
+        if not user.profile_verified:
+            _create_notification(
+                user,
+                "Interview pending",
+                "Finish the AI interview to unlock a verified profile.",
+                category="verification",
+                link="/dashboard/interview",
+            )
+        if not _latest_resume_document(user):
+            _create_notification(
+                user,
+                "Resume builder ready",
+                "Generate an ATS-friendly resume from your verified profile.",
+                category="student",
+                link="/dashboard/resume-builder",
+            )
+    elif _require_role(user, "recruiter"):
+        _create_notification(
+            user,
+            "Create your first job brief",
+            "Add a job description to rank candidates by match score.",
+            category="recruiter",
+            link="/recruiter/dashboard",
+        )
+    elif _require_role(user, "university"):
+        _create_notification(
+            user,
+            "Import your batch",
+            "Upload a cohort CSV to populate students and intervention tracking.",
+            category="university",
+            link="/university/dashboard",
+        )
+
+
+def _candidate_pipeline_payload(entry):
+    if not entry:
+        return None
+    return {
+        "status": entry.status,
+        "notes": entry.notes,
+        "tags": entry.tags or [],
+        "match_score": int(entry.match_score or 0),
+        "assignee_name": entry.assignee_name,
+        "next_step": entry.next_step,
+        "rejection_reason": entry.rejection_reason,
+        "follow_up_at": entry.follow_up_at.isoformat() if entry.follow_up_at else None,
+        "last_contacted_at": entry.last_contacted_at.isoformat() if entry.last_contacted_at else None,
+        "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
+    }
+
+
+def _pipeline_summary_for_entries(entries):
+    summary = {
+        "sourced": 0,
+        "shortlisted": 0,
+        "interviewing": 0,
+        "offered": 0,
+        "rejected": 0,
+    }
+    for entry in entries:
+        if entry.status in summary:
+            summary[entry.status] += 1
+    return summary
+
+
+def _job_match_payload(candidate_payload, job, student=None):
+    if not job:
+        return {
+            "score": candidate_payload.get("score", 0),
+            "reasons": [],
+            "matched_skills": [],
+            "missing_skills": [],
+            "semantic_score": 0,
+            "matched_keywords": [],
+            "missing_keywords": [],
+        }
+
+    candidate_skills = {
+        (skill.get("name") or "").strip().lower(): skill
+        for skill in candidate_payload.get("skills", [])
+        if skill.get("name")
+    }
+    required = _normalize_string_list(job.required_skills)
+    preferred = _normalize_string_list(job.preferred_skills)
+    matched_required = [skill for skill in required if skill.lower() in candidate_skills]
+    matched_preferred = [skill for skill in preferred if skill.lower() in candidate_skills]
+    missing_required = [skill for skill in required if skill.lower() not in candidate_skills]
+
+    required_ratio = len(matched_required) / max(1, len(required)) if required else min(
+        1,
+        (candidate_payload.get("scores", {}).get("coding_skill_index", 0) or 0) / 100,
+    )
+    preferred_ratio = len(matched_preferred) / max(1, len(preferred)) if preferred else 0.5
+    ready_ratio = min(1, (candidate_payload.get("score", 0) or 0) / 100)
+    min_ready_bonus = 1 if (candidate_payload.get("score", 0) or 0) >= int(job.min_ready_score or 0) else 0
+    authenticity_ratio = min(
+        1,
+        (candidate_payload.get("scores", {}).get("authenticity_score", 0) or 0) / 100,
+    )
+    verified_bonus = 1 if candidate_payload.get("profile_verified") else 0
+    semantic = _semantic_overlap(job, student, candidate_payload) if student else {"score": 0, "matched_keywords": [], "missing_keywords": []}
+    semantic_ratio = min(1, (semantic.get("score", 0) or 0) / 100)
+
+    match_score = round(
+        min(
+            100,
+            (
+                required_ratio * 35
+                + preferred_ratio * 10
+                + ready_ratio * 15
+                + min_ready_bonus * 15
+                + authenticity_ratio * 5
+                + verified_bonus * 5
+                + semantic_ratio * 15
+            ),
+        )
+    )
+
+    reasons = []
+    if matched_required:
+        reasons.append(f"Matched required skills: {', '.join(matched_required[:3])}.")
+    if (candidate_payload.get("score", 0) or 0) >= int(job.min_ready_score or 0):
+        reasons.append(f"Placement readiness clears the {job.min_ready_score} threshold.")
+    if candidate_payload.get("profile_verified"):
+        reasons.append("Profile is verification-complete.")
+    if missing_required:
+        reasons.append(f"Still missing: {', '.join(missing_required[:3])}.")
+    if semantic.get("matched_keywords"):
+        reasons.append(f"Semantic overlap detected in: {', '.join(semantic['matched_keywords'][:3])}.")
+
+    return {
+        "score": match_score,
+        "reasons": reasons[:3],
+        "matched_skills": matched_required,
+        "missing_skills": missing_required,
+        "semantic_score": semantic.get("score", 0),
+        "matched_keywords": semantic.get("matched_keywords", []),
+        "missing_keywords": semantic.get("missing_keywords", []),
+    }
+
+
+def _job_payload(job):
+    return {
+        "id": job.id,
+        "title": job.title,
+        "description": job.description,
+        "required_skills": _normalize_string_list(job.required_skills),
+        "preferred_skills": _normalize_string_list(job.preferred_skills),
+        "min_ready_score": int(job.min_ready_score or 0),
+        "status": job.status,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+def _interview_schedule_payload(schedule):
+    return {
+        "id": schedule.id,
+        "title": schedule.title,
+        "candidate_id": schedule.candidate_id,
+        "candidate_name": schedule.candidate.full_name or schedule.candidate.username,
+        "recruiter_id": schedule.recruiter_id,
+        "recruiter_name": schedule.recruiter.full_name or schedule.recruiter.username,
+        "job_id": schedule.job_id,
+        "job_title": schedule.job.title if schedule.job else "",
+        "scheduled_at": schedule.scheduled_at.isoformat() if schedule.scheduled_at else None,
+        "duration_minutes": schedule.duration_minutes,
+        "meeting_link": schedule.meeting_link,
+        "notes": schedule.notes,
+        "status": schedule.status,
+    }
+
+
+def _saved_search_payload(saved_search):
+    return {
+        "id": saved_search.id,
+        "name": saved_search.name,
+        "query": saved_search.query,
+        "filters": saved_search.filters or {},
+        "updated_at": saved_search.updated_at.isoformat() if saved_search.updated_at else None,
+    }
+
+
+def _batch_upload_payload(batch_upload):
+    return {
+        "id": batch_upload.id,
+        "filename": batch_upload.filename,
+        "status": batch_upload.status,
+        "summary": batch_upload.summary or {},
+        "created_at": batch_upload.created_at.isoformat() if batch_upload.created_at else None,
+    }
+
+
+def _intervention_record_payload(record):
+    if not record:
+        return None
+    return {
+        "status": record.status,
+        "priority": record.priority,
+        "note": record.note,
+        "recommended_action": record.recommended_action,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
+def _placement_drive_payload(drive, students=None):
+    eligible_students = []
+    if students is not None:
+        for item in students:
+            branch_match = not drive.target_branches or item.get("branch") in drive.target_branches
+            course_match = not drive.target_courses or item.get("course") in drive.target_courses
+            score_match = item.get("score", 0) >= int(drive.minimum_ready_score or 0)
+            if branch_match and course_match and score_match:
+                eligible_students.append(item)
+    return {
+        "id": drive.id,
+        "company_name": drive.company_name,
+        "role_title": drive.role_title,
+        "description": drive.description,
+        "target_branches": _normalize_string_list(drive.target_branches),
+        "target_courses": _normalize_string_list(drive.target_courses),
+        "minimum_ready_score": int(drive.minimum_ready_score or 0),
+        "scheduled_on": drive.scheduled_on.isoformat() if drive.scheduled_on else None,
+        "status": drive.status,
+        "eligible_count": len(eligible_students),
+        "top_candidates": [
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "score": item["score"],
+                "branch": item["branch"],
+                "verification_id": item["verification_id"],
+            }
+            for item in sorted(eligible_students, key=lambda entry: (-entry["score"], entry["name"].lower()))[:5]
+        ],
+        "updated_at": drive.updated_at.isoformat() if drive.updated_at else None,
+    }
 
 
 def _repo_cache_enabled():
@@ -192,6 +600,13 @@ def _maybe_mark_profile_verified(user, session):
     if total_questions and answered >= total_questions and not user.profile_verified:
         user.profile_verified = True
         user.save(update_fields=["profile_verified"])
+        _create_notification(
+            user,
+            "Profile verified",
+            "Your AI interview is complete and your profile is now verified.",
+            category="verification",
+            link="/dashboard/passport",
+        )
 
 
 def _build_recommendations(user):
@@ -1007,6 +1422,453 @@ def _flag_ai_generated_repos(owner, user=None):
                 })
     return flagged
 
+
+def _student_score_map(student):
+    score_map = {
+        card.score_type: card.score
+        for card in student.scorecards.all()
+    }
+    if score_map:
+        return score_map
+    if student.role != "student":
+        return {}
+    try:
+        return calculate_student_scores(student)
+    except Exception:
+        return {}
+
+
+def _student_skill_payload(student):
+    skill_objects = sorted(
+        list(student.skills.all()),
+        key=lambda skill: (-(skill.score or 0), skill.name.lower()),
+    )
+    skills = [
+        {
+            "name": skill.name,
+            "score": skill.score or 0,
+            "level": skill.level,
+            "verified": skill.verified,
+        }
+        for skill in skill_objects
+    ]
+    if skills:
+        return skills
+
+    fallback = []
+    seen = set()
+    for item in (student.student_skills or "").split(","):
+        normalized = item.strip()
+        key = normalized.lower()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        fallback.append({
+            "name": normalized,
+            "score": 50,
+            "level": "beginner",
+            "verified": False,
+        })
+    return fallback
+
+
+def _student_focus_area(scores):
+    focus_scores = {
+        "Coding": scores.get("coding_skill_index", 0) or 0,
+        "Communication": scores.get("communication_score", 0) or 0,
+        "Authenticity": scores.get("authenticity_score", 0) or 0,
+    }
+    focus_area, _value = min(focus_scores.items(), key=lambda item: item[1])
+    actions = {
+        "Coding": "Schedule a coding round and review GitHub depth.",
+        "Communication": "Assess storytelling, clarity, and mock interview confidence.",
+        "Authenticity": "Review platform evidence and ask for project walkthroughs.",
+    }
+    return focus_area, actions[focus_area]
+
+
+def _student_status_label(placement_ready, profile_verified):
+    if placement_ready >= 80 and profile_verified:
+        return "Interview ready"
+    if placement_ready >= 70:
+        return "Shortlist next"
+    if placement_ready >= 55:
+        return "Needs one more review"
+    return "Needs coaching"
+
+
+def _latest_resume_document(student):
+    prefetched_documents = getattr(student, "_prefetched_objects_cache", {}).get("documents")
+    if prefetched_documents is not None:
+        for document in prefetched_documents:
+            if document.doc_type == "resume" and document.file:
+                return document
+        return None
+    return student.documents.filter(doc_type="resume").first()
+
+
+def _resume_document_payload(document, download_path):
+    if not document or not document.file:
+        return None
+    return {
+        "filename": document.title or os.path.basename(document.file.name or "resume"),
+        "uploaded_at": document.created_at.isoformat() if document.created_at else None,
+        "download_path": download_path,
+    }
+
+
+def _resume_file_response(document):
+    if not document or not document.file:
+        return Response({'error': 'Resume not found'}, status=404)
+    return FileResponse(
+        document.file.open("rb"),
+        as_attachment=True,
+        filename=document.title or os.path.basename(document.file.name or "resume"),
+    )
+
+
+def _build_skill_evidence_items(user, skill):
+    items = []
+    skill_name = (skill.name or "").strip()
+    skill_name_lower = skill_name.lower()
+    resume_document = _latest_resume_document(user)
+    student_skills_text = (user.student_skills or "").lower()
+
+    if resume_document:
+        items.append({
+            "source": "resume",
+            "title": "Resume evidence",
+            "detail": f"Referenced in uploaded resume: {resume_document.title}",
+            "url": "/api/skills/resume/",
+            "created_at": resume_document.created_at.isoformat() if resume_document.created_at else None,
+        })
+
+    if skill_name_lower and skill_name_lower in student_skills_text:
+        items.append({
+            "source": "profile",
+            "title": "Declared by student",
+            "detail": "Listed in the student skill profile.",
+            "url": "/dashboard/settings",
+            "created_at": None,
+        })
+
+    latest_report = user.code_analysis_reports.filter(status="completed").first()
+    if latest_report:
+        items.append({
+            "source": "repository",
+            "title": "Repository analysis",
+            "detail": latest_report.repo_url,
+            "url": latest_report.repo_url,
+            "created_at": latest_report.created_at.isoformat() if latest_report.created_at else None,
+        })
+
+    latest_submission = user.submissions.exclude(repo_url="").first()
+    if latest_submission:
+        items.append({
+            "source": "project",
+            "title": latest_submission.title or "Project submission",
+            "detail": latest_submission.repo_url or (latest_submission.description or "Project evidence"),
+            "url": latest_submission.repo_url,
+            "created_at": latest_submission.created_at.isoformat() if latest_submission.created_at else None,
+        })
+
+    interview_session = user.ai_interviews.filter(status="completed").first()
+    if interview_session:
+        items.append({
+            "source": "interview",
+            "title": "Interview verification",
+            "detail": f"Completed AI interview with score {_interview_state_payload(interview_session)['score']}/100.",
+            "url": "/dashboard/interview",
+            "created_at": interview_session.completed_at.isoformat() if interview_session.completed_at else None,
+        })
+
+    media_upload = user.media_uploads.exclude(status="processing").first()
+    if media_upload:
+        items.append({
+            "source": media_upload.media_type,
+            "title": media_upload.title,
+            "detail": f"{media_upload.media_type.title()} upload available as supporting evidence.",
+            "url": "/dashboard/media",
+            "created_at": media_upload.created_at.isoformat() if media_upload.created_at else None,
+        })
+
+    public_links = [
+        ("GitHub", user.github_link),
+        ("LeetCode", user.leetcode_link),
+        ("LinkedIn", user.linkedin_link),
+        ("CodeChef", user.codechef_link),
+        ("HackerRank", user.hackerrank_link),
+    ]
+    for label, url in public_links:
+        if not url:
+            continue
+        items.append({
+            "source": label.lower(),
+            "title": f"{label} profile connected",
+            "detail": url,
+            "url": url,
+            "created_at": None,
+        })
+        if len(items) >= 6:
+            break
+
+    deduped = []
+    seen = set()
+    for item in items:
+        key = (item["source"], item["title"], item["detail"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped[:6]
+
+
+def _resume_preview_payload(user):
+    skills = list(user.skills.order_by('-verified', '-score', 'name')[:10])
+    scorecards = list(user.scorecards.all())
+    latest_interview = user.ai_interviews.filter(status='completed').first()
+    latest_report = user.code_analysis_reports.filter(status='completed').first()
+    links = [
+        {"label": "GitHub", "url": user.github_link},
+        {"label": "LeetCode", "url": user.leetcode_link},
+        {"label": "LinkedIn", "url": user.linkedin_link},
+        {"label": "CodeChef", "url": user.codechef_link},
+        {"label": "HackerRank", "url": user.hackerrank_link},
+        {"label": "Codeforces", "url": user.codeforces_link},
+        {"label": "GeeksforGeeks", "url": user.gfg_link},
+    ]
+
+    top_skill_names = [skill.name for skill in skills[:4] if skill.name]
+    summary = (
+        user.linkedin_about
+        or user.linkedin_headline
+        or (
+            f"{user.full_name or user.username} is a {user.course or 'student'} focused on "
+            f"{', '.join(top_skill_names) or 'applied software projects'} with a placement readiness "
+            f"score of {next((card.score for card in scorecards if card.score_type == 'placement_ready'), 0)}/100."
+        )
+    )
+
+    achievements = []
+    for card in scorecards:
+        label = card.score_type.replace('_', ' ').title()
+        achievements.append(f"{label}: {card.score}/100")
+    if latest_interview:
+        achievements.append(
+            f"AI interview score: {_interview_state_payload(latest_interview)['score']}/100"
+        )
+    if latest_report:
+        achievements.append(f"Repository analyzed: {latest_report.repo_url}")
+
+    return {
+        "full_name": user.full_name or user.username,
+        "headline": user.linkedin_headline or "Verified student profile",
+        "summary": summary,
+        "education": {
+            "college": user.college or "",
+            "course": user.course or "",
+            "branch": user.branch or "",
+            "year_of_study": user.year_of_study or "",
+            "cgpa": float(user.cgpa) if user.cgpa is not None else None,
+        },
+        "skills": [
+            {
+                "name": skill.name,
+                "level": skill.level,
+                "score": skill.score,
+                "verified": skill.verified,
+            }
+            for skill in skills
+        ],
+        "achievements": achievements[:6],
+        "projects": [
+            {
+                "title": report.repo_url if report.repo_url else "Repository analysis",
+                "description": report.summary or "AI-analyzed code repository.",
+                "link": report.repo_url,
+            }
+            for report in user.code_analysis_reports.filter(status='completed')[:3]
+        ] + [
+            {
+                "title": submission.title,
+                "description": submission.description or "Project submission",
+                "link": submission.repo_url,
+            }
+            for submission in user.submissions.exclude(repo_url='')[:2]
+        ],
+        "links": [item for item in links if item["url"]],
+    }
+
+
+def _interview_history_payload(user, limit=6):
+    sessions = user.ai_interviews.all()[:limit]
+    payload = []
+    for session in sessions:
+        answers = session.answers or []
+        summary = _build_interview_summary(answers) if answers else {"strengths": [], "improvements": []}
+        payload.append({
+            "id": session.id,
+            "status": session.status,
+            "score": _interview_state_payload(session)["score"],
+            "answered": len(answers),
+            "questions": len(session.questions or []),
+            "started_at": session.started_at.isoformat() if session.started_at else None,
+            "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+            "strengths": summary.get("strengths", [])[:2],
+            "improvements": summary.get("improvements", [])[:2],
+        })
+    return payload
+
+
+def _student_summary_payload(student):
+    scores = _student_score_map(student)
+    skills = _student_skill_payload(student)
+    resume_document = _latest_resume_document(student)
+    placement_ready = int(scores.get("placement_ready", 0) or 0)
+    focus_area, recommended_action = _student_focus_area(scores)
+    top_skills = skills[:8]
+    profile_verified = bool(student.profile_verified)
+
+    return {
+        "id": student.id,
+        "verification_id": f"SKV-{student.id:05d}",
+        "name": student.full_name or student.username,
+        "email": student.email,
+        "college": student.college or "",
+        "course": student.course or "Student",
+        "branch": student.branch or "",
+        "year_of_study": student.year_of_study or "",
+        "cgpa": float(student.cgpa) if student.cgpa is not None else None,
+        "location": student.branch or "",
+        "headline": student.linkedin_headline or "",
+        "summary": student.linkedin_about or "",
+        "profile_verified": profile_verified,
+        "status_label": _student_status_label(placement_ready, profile_verified),
+        "focus_area": focus_area,
+        "recommended_action": recommended_action,
+        "needs_attention": placement_ready < 60 or not profile_verified,
+        "score": placement_ready,
+        "scores": {
+            "placement_ready": placement_ready,
+            "coding_skill_index": int(scores.get("coding_skill_index", 0) or 0),
+            "communication_score": int(scores.get("communication_score", 0) or 0),
+            "authenticity_score": int(scores.get("authenticity_score", 0) or 0),
+        },
+        "skills": top_skills,
+        "verified_skills": sum(1 for skill in top_skills if skill["verified"]),
+        "highlights": [skill["name"] for skill in top_skills[:3]],
+        "resume_document": _resume_document_payload(
+            resume_document,
+            f"/api/skills/recruiter-dashboard/resume/{student.id}/",
+        ),
+        "links": {
+            "github": student.github_link or "",
+            "leetcode": student.leetcode_link or "",
+            "linkedin": student.linkedin_link or "",
+            "codechef": student.codechef_link or "",
+            "hackerrank": student.hackerrank_link or "",
+            "codeforces": student.codeforces_link or "",
+            "gfg": student.gfg_link or "",
+        },
+        "last_analyzed_at": student.last_analyzed_at.isoformat() if student.last_analyzed_at else None,
+    }
+
+
+def _skill_distribution_for_students(student_payloads, limit=8):
+    counts = {}
+    for payload in student_payloads:
+        for skill in payload.get("skills", [])[:6]:
+            name = skill.get("name")
+            if not name:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+    items = sorted(
+        [{"name": name, "count": count} for name, count in counts.items()],
+        key=lambda item: (-item["count"], item["name"].lower()),
+    )
+    return items[:limit]
+
+
+def _trend_for_students(student_ids, student_payloads):
+    if not student_ids:
+        return []
+
+    cutoff = timezone.localdate() - timedelta(days=90)
+    snapshots = ScoreSnapshot.objects.filter(
+        user_id__in=student_ids,
+        recorded_on__gte=cutoff,
+    ).order_by("recorded_on")
+
+    buckets = {}
+    for snapshot in snapshots:
+        bucket = buckets.setdefault(snapshot.recorded_on, {
+            "count": 0,
+            "placement_ready": 0,
+            "coding_skill_index": 0,
+            "communication_score": 0,
+            "authenticity_score": 0,
+        })
+        bucket["count"] += 1
+        scores = snapshot.scores or {}
+        for field in ["placement_ready", "coding_skill_index", "communication_score", "authenticity_score"]:
+            bucket[field] += scores.get(field, 0) or 0
+
+    if not buckets:
+        if not student_payloads:
+            return []
+        return [{
+            "date": timezone.localdate().isoformat(),
+            "placement_ready": _score_mean([item["scores"]["placement_ready"] for item in student_payloads]),
+            "coding_skill_index": _score_mean([item["scores"]["coding_skill_index"] for item in student_payloads]),
+            "communication_score": _score_mean([item["scores"]["communication_score"] for item in student_payloads]),
+            "authenticity_score": _score_mean([item["scores"]["authenticity_score"] for item in student_payloads]),
+        }]
+
+    series = []
+    for recorded_on in sorted(buckets):
+        bucket = buckets[recorded_on]
+        count = bucket["count"] or 1
+        series.append({
+            "date": recorded_on.isoformat(),
+            "placement_ready": round(bucket["placement_ready"] / count, 1),
+            "coding_skill_index": round(bucket["coding_skill_index"] / count, 1),
+            "communication_score": round(bucket["communication_score"] / count, 1),
+            "authenticity_score": round(bucket["authenticity_score"] / count, 1),
+        })
+    return series
+
+
+def _interventions_for_students(student_payloads, limit=6):
+    interventions = []
+    for payload in student_payloads:
+        reasons = []
+        scores = payload["scores"]
+        if payload["score"] < 60:
+            reasons.append("Placement readiness is below 60.")
+        if scores["coding_skill_index"] < 55:
+            reasons.append("Coding evidence is still weak.")
+        if scores["communication_score"] < 55:
+            reasons.append("Communication needs more structure.")
+        if not payload["profile_verified"]:
+            reasons.append("Verification interview is incomplete.")
+        if not reasons:
+            continue
+        severity = "high" if payload["score"] < 50 else "medium" if payload["score"] < 65 else "low"
+        interventions.append({
+            "id": payload["id"],
+            "name": payload["name"],
+            "verification_id": payload["verification_id"],
+            "college": payload["college"],
+            "branch": payload["branch"],
+            "score": payload["score"],
+            "focus_area": payload["focus_area"],
+            "severity": severity,
+            "reason": " ".join(reasons[:2]),
+            "action": payload["recommended_action"],
+        })
+    interventions.sort(key=lambda item: (item["score"], item["name"].lower()))
+    return interventions[:limit]
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def dashboard_view(request):
@@ -1077,15 +1939,18 @@ def skill_passport_view(request):
         {'skill': skill.name, 'level': skill.score or 50, 'fullMark': 100}
         for skill in skills
     ]
-    verified = [
-        {
-            'name': skill.name,
-            'level': skill.level,
-            'evidence': 0,
-            'verified': skill.verified,
-        }
-        for skill in skills.filter(verified=True)
-    ]
+    verified = []
+    for skill in skills.filter(verified=True):
+        evidence_items = _build_skill_evidence_items(request.user, skill)
+        verified.append(
+            {
+                'name': skill.name,
+                'level': skill.level,
+                'evidence': len(evidence_items),
+                'verified': skill.verified,
+                'evidence_items': evidence_items,
+            }
+        )
     scorecards = ScoreCard.objects.filter(user=request.user)
     bar_data = [
         {'name': score.score_type.replace('_', ' ').title(), 'score': score.score}
@@ -1292,6 +2157,7 @@ def ai_interview_view(request):
             'feedback': [],
             'metrics': [],
             'tips': [],
+            'history': _interview_history_payload(request.user),
             **_interview_state_payload(AIInterviewSession(user=request.user)),
         })
     return Response({
@@ -1300,6 +2166,7 @@ def ai_interview_view(request):
         'feedback': session.feedback,
         'metrics': session.metrics,
         'tips': session.tips,
+        'history': _interview_history_payload(request.user),
         **_interview_state_payload(session),
         'updated_at': session.updated_at.isoformat(),
     })
@@ -1337,6 +2204,7 @@ def ai_interview_action_view(request):
             'feedback': session.feedback,
             'metrics': metrics,
             'tips': tips,
+            'history': _interview_history_payload(request.user),
             **_interview_state_payload(session),
         })
 
@@ -1428,6 +2296,14 @@ def ai_interview_action_view(request):
         ])
         if session.status == 'completed':
             _maybe_mark_profile_verified(request.user, session)
+            _create_notification(
+                request.user,
+                "Interview session completed",
+                "Your mock interview history and latest score are now available.",
+                category="verification" if request.user.profile_verified else "student",
+                link="/dashboard/interview",
+                metadata={"session_id": session.id, "score": _interview_state_payload(session)["score"]},
+            )
 
         return Response({
             'status': session.status,
@@ -1435,6 +2311,7 @@ def ai_interview_action_view(request):
             'feedback': session.feedback,
             'metrics': session.metrics,
             'tips': session.tips,
+            'history': _interview_history_payload(request.user),
             **_interview_state_payload(session),
         })
 
@@ -1443,7 +2320,19 @@ def ai_interview_action_view(request):
         session.completed_at = timezone.now()
         session.save(update_fields=['status', 'completed_at', 'updated_at'])
         _maybe_mark_profile_verified(request.user, session)
-        return Response({'status': session.status, **_interview_state_payload(session)})
+        _create_notification(
+            request.user,
+            "Interview session ended",
+            "Review coach notes and use the history panel to compare attempts.",
+            category="student",
+            link="/dashboard/interview",
+            metadata={"session_id": session.id, "score": _interview_state_payload(session)["score"]},
+        )
+        return Response({
+            'status': session.status,
+            'history': _interview_history_payload(request.user),
+            **_interview_state_payload(session),
+        })
 
     return Response({'error': 'Invalid action'}, status=400)
 
@@ -1453,29 +2342,652 @@ def ai_interview_action_view(request):
 def recruiter_dashboard_view(request):
     if not _require_role(request.user, 'recruiter'):
         return Response({'error': 'Unauthorized'}, status=403)
-    students = User.objects.filter(role='student').select_related()
+    _bootstrap_notifications_for_user(request.user)
+    requested_job_id = _safe_int(request.query_params.get('job_id'), default=0)
+    jobs = list(RecruiterJob.objects.filter(recruiter=request.user))
+    selected_job = next((job for job in jobs if job.id == requested_job_id), None)
+    if not selected_job and jobs:
+        selected_job = next((job for job in jobs if job.status == 'open'), jobs[0])
+
+    students = User.objects.filter(role='student').prefetch_related(
+        'scorecards',
+        'skills',
+        'documents',
+        'submissions',
+        'ai_interviews',
+        'code_analysis_reports',
+    )
+    pipeline_entries = list(
+        RecruiterCandidatePipeline.objects.filter(recruiter=request.user).select_related('candidate', 'job')
+    )
+    pipeline_map = {
+        (entry.candidate_id, entry.job_id): entry
+        for entry in pipeline_entries
+    }
+    generic_pipeline_map = {
+        entry.candidate_id: entry
+        for entry in pipeline_entries
+        if entry.job_id is None
+    }
+
     candidates = []
-    for student in students[:20]:
-        scores = {
-            card.score_type: card.score
-            for card in student.scorecards.all()
-        }
-        skill_list = [
-            {'name': skill.name, 'score': skill.score or 50}
-            for skill in student.skills.all()[:6]
-        ]
-        candidates.append({
-            'id': student.id,
-            'name': student.full_name or student.username,
-            'college': student.college or '',
-            'role': student.course or 'Student',
-            'location': student.branch or '',
-            'score': scores.get('placement_ready', 0),
-            'skills': skill_list,
-        })
+    for student in students:
+        payload = _student_summary_payload(student)
+        match = _job_match_payload(payload, selected_job, student)
+        pipeline_entry = (
+            pipeline_map.get((student.id, selected_job.id if selected_job else None))
+            if selected_job
+            else generic_pipeline_map.get(student.id)
+        )
+        payload['match_score'] = (
+            int(pipeline_entry.match_score or 0)
+            if pipeline_entry and pipeline_entry.match_score
+            else match['score']
+        )
+        payload['match_reasons'] = match['reasons']
+        payload['matched_skills'] = match['matched_skills']
+        payload['missing_skills'] = match['missing_skills']
+        payload['semantic_score'] = match['semantic_score']
+        payload['matched_keywords'] = match['matched_keywords']
+        payload['missing_keywords'] = match['missing_keywords']
+        payload['pipeline'] = _candidate_pipeline_payload(pipeline_entry)
+        candidates.append(payload)
+
+    sort_key = "match_score" if selected_job else "score"
+    candidates = sorted(
+        candidates,
+        key=lambda item: (-item[sort_key], -item["score"], item["name"].lower()),
+    )
+    summary = {
+        "candidates": len(candidates),
+        "average_ready": _score_mean([item["score"] for item in candidates]),
+        "verified_profiles": sum(1 for item in candidates if item["profile_verified"]),
+        "shortlist_ready": sum(1 for item in candidates if item["score"] >= 75),
+        "active_jobs": sum(1 for job in jobs if job.status == 'open'),
+        "shortlisted": sum(1 for entry in pipeline_entries if entry.status == 'shortlisted'),
+    }
+    available_skills = sorted({
+        skill["name"]
+        for candidate in candidates
+        for skill in candidate.get("skills", [])
+        if skill.get("name")
+    })
+    job_payloads = []
+    for job in jobs[:10]:
+        top_matches = 0
+        for candidate in candidates:
+            if _job_match_payload(candidate, job, None)["score"] >= max(int(job.min_ready_score or 0), 60):
+                top_matches += 1
+        item = _job_payload(job)
+        item["top_matches"] = top_matches
+        job_payloads.append(item)
+
+    schedules = InterviewSchedule.objects.filter(recruiter=request.user).select_related('candidate', 'job')[:12]
+
     return Response({
+        'summary': summary,
+        'filters': {
+            'skills': available_skills[:20],
+        },
+        'selected_job_id': selected_job.id if selected_job else None,
+        'jobs': job_payloads,
+        'saved_searches': [
+            _saved_search_payload(search)
+            for search in RecruiterSavedSearch.objects.filter(recruiter=request.user)[:8]
+        ],
+        'pipeline_summary': _pipeline_summary_for_entries(pipeline_entries),
+        'interview_schedules': [_interview_schedule_payload(schedule) for schedule in schedules],
         'candidates': candidates,
     })
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def recruiter_jobs_view(request):
+    if not _require_role(request.user, 'recruiter'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    if request.method == 'POST':
+        title = (request.data.get('title') or '').strip()
+        if not title:
+            return Response({'error': 'Job title is required'}, status=400)
+        job = RecruiterJob.objects.create(
+            recruiter=request.user,
+            title=title,
+            description=(request.data.get('description') or '').strip(),
+            required_skills=_normalize_string_list(request.data.get('required_skills')),
+            preferred_skills=_normalize_string_list(request.data.get('preferred_skills')),
+            min_ready_score=_safe_int(request.data.get('min_ready_score'), default=60),
+            status=(request.data.get('status') or 'open').strip() or 'open',
+        )
+        _create_notification(
+            request.user,
+            "Job brief saved",
+            f"{job.title} is ready for candidate matching.",
+            category="recruiter",
+            link="/recruiter/dashboard",
+            metadata={"job_id": job.id},
+        )
+        return Response({'job': _job_payload(job)}, status=201)
+
+    return Response({
+        'jobs': [_job_payload(job) for job in RecruiterJob.objects.filter(recruiter=request.user)],
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def recruiter_pipeline_view(request, candidate_id):
+    if not _require_role(request.user, 'recruiter'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    candidate = User.objects.filter(role='student', id=candidate_id).prefetch_related(
+        'scorecards',
+        'skills',
+        'documents',
+    ).first()
+    if not candidate:
+        return Response({'error': 'Candidate not found'}, status=404)
+
+    job = None
+    job_id = _safe_int(request.data.get('job_id'), default=0)
+    if job_id:
+        job = RecruiterJob.objects.filter(recruiter=request.user, id=job_id).first()
+        if not job:
+            return Response({'error': 'Job not found'}, status=404)
+
+    status_value = (request.data.get('status') or 'sourced').strip() or 'sourced'
+    tags = _normalize_string_list(request.data.get('tags'))
+    notes = (request.data.get('notes') or '').strip()
+    assignee_name = (request.data.get('assignee_name') or '').strip()
+    next_step = (request.data.get('next_step') or '').strip()
+    rejection_reason = (request.data.get('rejection_reason') or '').strip()
+    follow_up_raw = (request.data.get('follow_up_at') or '').strip()
+    follow_up_at = None
+    if follow_up_raw:
+        try:
+            follow_up_at = timezone.datetime.fromisoformat(follow_up_raw.replace("Z", "+00:00"))
+            if timezone.is_naive(follow_up_at):
+                follow_up_at = timezone.make_aware(follow_up_at, timezone.get_current_timezone())
+        except (TypeError, ValueError):
+            follow_up_at = None
+    candidate_payload = _student_summary_payload(candidate)
+    match = _job_match_payload(candidate_payload, job, candidate)
+    pipeline_entry, _ = RecruiterCandidatePipeline.objects.update_or_create(
+        recruiter=request.user,
+        candidate=candidate,
+        job=job,
+        defaults={
+            'status': status_value,
+            'notes': notes,
+            'tags': tags,
+            'match_score': match['score'],
+            'assignee_name': assignee_name,
+            'next_step': next_step,
+            'rejection_reason': rejection_reason,
+            'follow_up_at': follow_up_at,
+            'last_contacted_at': timezone.now() if request.data.get('contacted') else None,
+        },
+    )
+
+    if status_value in {'shortlisted', 'interviewing', 'offered'}:
+        _create_notification(
+            candidate,
+            "Recruiter activity",
+            f"Your profile moved to {status_value.replace('_', ' ')} for {job.title if job else 'a recruiter review'}.",
+            category="student",
+            link="/dashboard",
+            metadata={"job_id": job.id if job else None, "status": status_value},
+        )
+
+    return Response({
+        'pipeline': _candidate_pipeline_payload(pipeline_entry),
+        'match': match,
+    })
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def interview_schedules_view(request):
+    if request.method == 'POST':
+        if not _require_role(request.user, 'recruiter'):
+            return Response({'error': 'Unauthorized'}, status=403)
+        candidate_id = _safe_int(request.data.get('candidate_id'), default=0)
+        candidate = User.objects.filter(role='student', id=candidate_id).first()
+        if not candidate:
+            return Response({'error': 'Candidate not found'}, status=404)
+        scheduled_at_raw = (request.data.get('scheduled_at') or '').strip()
+        if not scheduled_at_raw:
+            return Response({'error': 'Interview date and time are required'}, status=400)
+        try:
+            scheduled_at = timezone.datetime.fromisoformat(scheduled_at_raw.replace("Z", "+00:00"))
+            if timezone.is_naive(scheduled_at):
+                scheduled_at = timezone.make_aware(scheduled_at, timezone.get_current_timezone())
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid interview date format'}, status=400)
+
+        job = None
+        job_id = _safe_int(request.data.get('job_id'), default=0)
+        if job_id:
+            job = RecruiterJob.objects.filter(recruiter=request.user, id=job_id).first()
+            if not job:
+                return Response({'error': 'Job not found'}, status=404)
+
+        schedule = InterviewSchedule.objects.create(
+            recruiter=request.user,
+            candidate=candidate,
+            job=job,
+            title=(request.data.get('title') or '').strip() or f"{job.title if job else 'Interview'} discussion",
+            scheduled_at=scheduled_at,
+            duration_minutes=max(15, _safe_int(request.data.get('duration_minutes'), default=30)),
+            meeting_link=(request.data.get('meeting_link') or '').strip(),
+            notes=(request.data.get('notes') or '').strip(),
+        )
+        _create_notification(
+            candidate,
+            "Interview scheduled",
+            f"{request.user.full_name or request.user.username} scheduled an interview on {timezone.localtime(schedule.scheduled_at).strftime('%b %d, %Y %I:%M %p')}.",
+            category="student",
+            link="/dashboard",
+            metadata={"schedule_id": schedule.id, "job_id": schedule.job_id},
+        )
+        return Response({'schedule': _interview_schedule_payload(schedule)}, status=201)
+
+    if _require_role(request.user, 'recruiter'):
+        schedules = InterviewSchedule.objects.filter(recruiter=request.user).select_related('candidate', 'job')[:20]
+    elif _require_role(request.user, 'student'):
+        schedules = InterviewSchedule.objects.filter(candidate=request.user).select_related('recruiter', 'job')[:20]
+    else:
+        return Response({'schedules': []})
+
+    return Response({'schedules': [_interview_schedule_payload(schedule) for schedule in schedules]})
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def recruiter_saved_searches_view(request):
+    if not _require_role(request.user, 'recruiter'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    if request.method == 'POST':
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({'error': 'Search name is required'}, status=400)
+        filters = request.data.get('filters') if isinstance(request.data.get('filters'), dict) else {}
+        saved_search = RecruiterSavedSearch.objects.create(
+            recruiter=request.user,
+            name=name,
+            query=(request.data.get('query') or '').strip(),
+            filters=filters,
+        )
+        return Response({'saved_search': _saved_search_payload(saved_search)}, status=201)
+
+    return Response({
+        'saved_searches': [
+            _saved_search_payload(search)
+            for search in RecruiterSavedSearch.objects.filter(recruiter=request.user)
+        ]
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def recruiter_candidate_report_view(request, student_id):
+    if not _require_role(request.user, 'recruiter'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    student = User.objects.filter(role='student', id=student_id).prefetch_related('scorecards', 'skills', 'documents').first()
+    if not student:
+        return Response({'error': 'Candidate not found'}, status=404)
+
+    candidate = _student_summary_payload(student)
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import inch
+        from reportlab.pdfgen import canvas
+    except ImportError:
+        return Response({'error': 'PDF export requires the reportlab package.'}, status=500)
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    x_margin = 0.75 * inch
+    y = height - x_margin
+
+    def draw_line(label, value, bold=False):
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(x_margin, y, f"{label}:")
+        pdf.setFont("Helvetica-Bold" if bold else "Helvetica", 10)
+        pdf.drawString(x_margin + 1.45 * inch, y, value or "-")
+        y -= 0.2 * inch
+
+    def draw_wrapped(label, value):
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 10)
+        pdf.drawString(x_margin, y, f"{label}:")
+        y -= 0.16 * inch
+        pdf.setFont("Helvetica", 10)
+        for line in textwrap.wrap(value or "-", width=88):
+            pdf.drawString(x_margin + 0.2 * inch, y, line)
+            y -= 0.16 * inch
+
+    pdf.setTitle(f"{candidate['name']} - Candidate Summary")
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(x_margin, y, "Recruiter Candidate Summary")
+    y -= 0.3 * inch
+
+    pdf.setFont("Helvetica-Bold", 14)
+    pdf.drawString(x_margin, y, candidate["name"])
+    pdf.setFont("Helvetica", 10)
+    pdf.drawRightString(width - x_margin, y, candidate["verification_id"])
+    y -= 0.26 * inch
+
+    draw_line("Email", candidate["email"])
+    draw_line("College", candidate["college"] or "-")
+    draw_line("Course", candidate["course"] or "-")
+    draw_line("Branch", candidate["branch"] or "-")
+    draw_line("Year", candidate["year_of_study"] or "-")
+    draw_line("Placement Ready", f"{candidate['scores']['placement_ready']}/100", bold=True)
+    draw_line("Coding Skill Index", f"{candidate['scores']['coding_skill_index']}/100")
+    draw_line("Communication Score", f"{candidate['scores']['communication_score']}/100")
+    draw_line("Authenticity Score", f"{candidate['scores']['authenticity_score']}/100")
+    draw_line("Status", candidate["status_label"])
+    draw_line("Focus Area", candidate["focus_area"])
+    draw_line(
+        "Resume",
+        candidate["resume_document"]["filename"] if candidate["resume_document"] else "Not uploaded",
+    )
+
+    y -= 0.08 * inch
+    draw_wrapped("Recommended Action", candidate["recommended_action"])
+    draw_wrapped("Top Skills", ", ".join(skill["name"] for skill in candidate["skills"]) or "No skills available")
+
+    links = [url for url in candidate["links"].values() if url]
+    draw_wrapped("Portfolio Links", ", ".join(links) if links else "No public links connected")
+
+    if candidate["summary"]:
+        draw_wrapped("LinkedIn Summary", candidate["summary"])
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+
+    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
+    filename = f"{candidate['name'].replace(' ', '_').lower()}-candidate-summary.pdf"
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def recruiter_candidate_resume_view(request, student_id):
+    if not _require_role(request.user, 'recruiter'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    resume_document = Document.objects.filter(
+        user_id=student_id,
+        user__role='student',
+        doc_type='resume',
+    ).first()
+    return _resume_file_response(resume_document)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def resume_document_view(request):
+    if not _require_role(request.user, 'student'):
+        return Response({'error': 'Unauthorized'}, status=403)
+    return _resume_file_response(_latest_resume_document(request.user))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def resume_builder_view(request):
+    if not _require_role(request.user, 'student'):
+        return Response({'error': 'Unauthorized'}, status=403)
+    preview = _resume_preview_payload(request.user)
+    preview["generated_at"] = timezone.now().isoformat()
+    return Response(preview)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def resume_builder_pdf_view(request):
+    if not _require_role(request.user, 'student'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import inch
+        from reportlab.pdfgen import canvas
+    except ImportError:
+        return Response({'error': 'PDF export requires the reportlab package.'}, status=500)
+
+    preview = _resume_preview_payload(request.user)
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    margin = 0.75 * inch
+    y = height - margin
+
+    def draw_heading(text):
+        nonlocal y
+        pdf.setFont("Helvetica-Bold", 14)
+        pdf.drawString(margin, y, text)
+        y -= 0.22 * inch
+
+    def draw_body(lines, indent=0.0):
+        nonlocal y
+        pdf.setFont("Helvetica", 10)
+        for line in lines:
+            for wrapped in textwrap.wrap(line or "-", width=92):
+                pdf.drawString(margin + indent, y, wrapped)
+                y -= 0.16 * inch
+                if y < margin:
+                    pdf.showPage()
+                    y = height - margin
+                    pdf.setFont("Helvetica", 10)
+
+    pdf.setTitle(f"{preview['full_name']} - Resume")
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(margin, y, preview["full_name"])
+    y -= 0.22 * inch
+    pdf.setFont("Helvetica", 11)
+    pdf.drawString(margin, y, preview["headline"])
+    y -= 0.3 * inch
+
+    draw_heading("Professional Summary")
+    draw_body([preview["summary"]])
+    y -= 0.08 * inch
+
+    education = preview["education"]
+    draw_heading("Education")
+    education_lines = [
+        " | ".join(
+            [
+                value
+                for value in [
+                    education.get("college"),
+                    education.get("course"),
+                    education.get("branch"),
+                    education.get("year_of_study"),
+                ]
+                if value
+            ]
+        ) or "Education details pending",
+    ]
+    if education.get("cgpa") is not None:
+        education_lines.append(f"CGPA: {education['cgpa']}")
+    draw_body(education_lines)
+    y -= 0.08 * inch
+
+    draw_heading("Skills")
+    draw_body([
+        ", ".join(
+            f"{item['name']} ({item['level']}, {item['score']}/100)"
+            for item in preview["skills"]
+        ) or "No verified skills yet"
+    ])
+    y -= 0.08 * inch
+
+    draw_heading("Projects")
+    project_lines = []
+    for project in preview["projects"][:5]:
+        project_lines.append(f"{project['title']}: {project['description']}")
+    draw_body(project_lines or ["No project evidence available yet"])
+    y -= 0.08 * inch
+
+    draw_heading("Highlights")
+    draw_body(preview["achievements"] or ["No score highlights available yet"])
+    y -= 0.08 * inch
+
+    draw_heading("Links")
+    draw_body([f"{item['label']}: {item['url']}" for item in preview["links"]] or ["No public links connected"])
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+
+    _create_notification(
+        request.user,
+        "Resume generated",
+        "Your ATS-ready resume export is ready for download.",
+        category="student",
+        link="/dashboard/resume-builder",
+    )
+
+    response = HttpResponse(buffer.getvalue(), content_type="application/pdf")
+    response["Content-Disposition"] = 'attachment; filename="skillsense-resume.pdf"'
+    return response
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def notifications_view(request):
+    _bootstrap_notifications_for_user(request.user)
+    notifications = Notification.objects.filter(user=request.user)[:12]
+    return Response({
+        "unread_count": Notification.objects.filter(user=request.user, read_at__isnull=True).count(),
+        "notifications": [_notification_payload(notification) for notification in notifications],
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def notification_read_view(request, notification_id):
+    queryset = Notification.objects.filter(user=request.user)
+    if notification_id == 0:
+        queryset.filter(read_at__isnull=True).update(read_at=timezone.now())
+        return Response({"message": "All notifications marked as read"})
+
+    notification = queryset.filter(id=notification_id).first()
+    if not notification:
+        return Response({'error': 'Notification not found'}, status=404)
+    if not notification.read_at:
+        notification.read_at = timezone.now()
+        notification.save(update_fields=['read_at'])
+    return Response({"notification": _notification_payload(notification)})
+
+
+def _batch_row_value(row, *keys):
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _coerce_csv_bool(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _ingest_batch_row(university, row):
+    email = _batch_row_value(row, "email", "Email")
+    if not email:
+        return "skipped", None
+
+    full_name = _batch_row_value(row, "full_name", "name", "Name")
+    username = email.split("@")[0] or (full_name.replace(" ", "").lower() if full_name else email)
+    defaults = {
+        "username": username[:150],
+        "role": "student",
+    }
+    student, created = User.objects.get_or_create(email=email, defaults=defaults)
+    if created:
+        student.set_unusable_password()
+
+    student.username = student.username or username[:150]
+    student.role = "student"
+    student.full_name = full_name or student.full_name
+    student.college = _batch_row_value(row, "college", "College") or student.college
+    student.course = _batch_row_value(row, "course", "Course") or student.course
+    student.branch = _batch_row_value(row, "branch", "Branch") or student.branch
+    student.year_of_study = _batch_row_value(row, "year_of_study", "year", "Year") or student.year_of_study
+    cgpa_value = _batch_row_value(row, "cgpa", "CGPA")
+    if cgpa_value:
+        try:
+            student.cgpa = float(cgpa_value)
+        except (TypeError, ValueError):
+            pass
+    student.student_skills = _batch_row_value(row, "student_skills", "skills", "Skills") or student.student_skills
+    verified_value = _batch_row_value(row, "profile_verified", "verified")
+    if verified_value:
+        student.profile_verified = _coerce_csv_bool(verified_value)
+    student.save()
+
+    score_map = {
+        "placement_ready": _safe_int(_batch_row_value(row, "placement_ready", "ready_score")),
+        "coding_skill_index": _safe_int(_batch_row_value(row, "coding_skill_index", "coding_score")),
+        "communication_score": _safe_int(_batch_row_value(row, "communication_score", "communication")),
+        "authenticity_score": _safe_int(_batch_row_value(row, "authenticity_score", "authenticity")),
+    }
+    if any(score_map.values()):
+        for score_type, score in score_map.items():
+            ScoreCard.objects.update_or_create(
+                user=student,
+                score_type=score_type,
+                defaults={"score": score, "change": 0},
+            )
+        ScoreSnapshot.objects.update_or_create(
+            user=student,
+            recorded_on=timezone.localdate(),
+            defaults={"scores": score_map},
+        )
+
+    imported_skills = _normalize_string_list(_batch_row_value(row, "student_skills", "skills", "Skills"))
+    verified_skills = {
+        item.lower()
+        for item in _normalize_string_list(_batch_row_value(row, "verified_skills", "Verified Skills"))
+    }
+    coding_score = score_map["coding_skill_index"]
+    inferred_level = (
+        "advanced" if coding_score >= 75 else "intermediate" if coding_score >= 55 else "beginner"
+    )
+    inferred_score = coding_score or max(score_map["placement_ready"], 50)
+    for skill_name in imported_skills[:15]:
+        Skill.objects.update_or_create(
+            user=student,
+            name=skill_name,
+            defaults={
+                "level": inferred_level,
+                "score": inferred_score,
+                "verified": student.profile_verified or skill_name.lower() in verified_skills,
+            },
+        )
+
+    _create_notification(
+        student,
+        "University profile synced",
+        f"{university.full_name or university.username} updated your cohort profile data.",
+        category="student",
+        link="/dashboard",
+        metadata={"source": "batch_upload"},
+    )
+    return ("created" if created else "updated"), student
 
 
 @api_view(['GET'])
@@ -1483,17 +2995,224 @@ def recruiter_dashboard_view(request):
 def university_dashboard_view(request):
     if not _require_role(request.user, 'university'):
         return Response({'error': 'Unauthorized'}, status=403)
+    _bootstrap_notifications_for_user(request.user)
+    branch = (request.query_params.get('branch') or '').strip()
+    course = (request.query_params.get('course') or '').strip()
+    year_of_study = (request.query_params.get('year_of_study') or '').strip()
+
     students = User.objects.filter(role='student')
-    totals = students.count()
-    avg_score = ScoreCard.objects.filter(score_type='placement_ready').aggregate(avg=Avg('score'))['avg'] or 0
-    skill_counts = Skill.objects.values('name').annotate(count=Count('id')).order_by('-count')[:6]
+    if branch:
+        students = students.filter(branch=branch)
+    if course:
+        students = students.filter(course=course)
+    if year_of_study:
+        students = students.filter(year_of_study=year_of_study)
+
+    students = students.prefetch_related('scorecards', 'skills', 'documents')
+    student_payloads = sorted(
+        [_student_summary_payload(student) for student in students],
+        key=lambda item: (-item["score"], item["name"].lower()),
+    )
+    totals = len(student_payloads)
+    placement_scores = [student["scores"]["placement_ready"] for student in student_payloads]
+    coding_scores = [student["scores"]["coding_skill_index"] for student in student_payloads]
+    authenticity_scores = [student["scores"]["authenticity_score"] for student in student_payloads]
+    verified_profiles = sum(1 for student in student_payloads if student["profile_verified"])
+    need_attention = sum(1 for student in student_payloads if student["needs_attention"])
+    student_ids = [student["id"] for student in student_payloads]
+    all_students = User.objects.filter(role='student')
+    intervention_map = {
+        record.student_id: record
+        for record in InterventionRecord.objects.filter(
+            university=request.user,
+            student_id__in=student_ids,
+        )
+    }
+    interventions = []
+    for item in _interventions_for_students(student_payloads):
+        record = intervention_map.get(item["id"])
+        item["status"] = record.status if record else "planned"
+        item["priority"] = record.priority if record else item["severity"]
+        item["note"] = record.note if record else ""
+        item["recommended_action"] = record.recommended_action if record and record.recommended_action else item["action"]
+        item["record"] = _intervention_record_payload(record)
+        interventions.append(item)
+    drives = [
+        _placement_drive_payload(drive, student_payloads)
+        for drive in PlacementDrive.objects.filter(university=request.user)[:8]
+    ]
     return Response({
         'summary': {
             'students': totals,
-            'average_ready': round(avg_score, 1),
+            'average_ready': _score_mean(placement_scores),
+            'average_coding': _score_mean(coding_scores),
+            'average_authenticity': _score_mean(authenticity_scores),
+            'verified_profiles': verified_profiles,
+            'need_attention': need_attention,
+            'tracked_interventions': sum(
+                1 for record in intervention_map.values() if record.status != 'completed'
+            ),
         },
-        'skill_distribution': list(skill_counts),
+        'filters': {
+            'branches': sorted(filter(None, all_students.values_list('branch', flat=True).distinct())),
+            'courses': sorted(filter(None, all_students.values_list('course', flat=True).distinct())),
+            'years': sorted(filter(None, all_students.values_list('year_of_study', flat=True).distinct())),
+        },
+        'readiness_breakdown': [
+            {'name': 'Ready', 'count': sum(1 for item in student_payloads if item['score'] >= 75)},
+            {'name': 'Almost Ready', 'count': sum(1 for item in student_payloads if 60 <= item['score'] < 75)},
+            {'name': 'Needs Support', 'count': sum(1 for item in student_payloads if item['score'] < 60)},
+        ],
+        'skill_distribution': _skill_distribution_for_students(student_payloads),
+        'placement_trend': _trend_for_students(student_ids, student_payloads),
+        'interventions': interventions,
+        'top_students': student_payloads[:5],
+        'students': student_payloads,
+        'batch_uploads': [
+            _batch_upload_payload(batch_upload)
+            for batch_upload in UniversityBatchUpload.objects.filter(university=request.user)[:5]
+        ],
+        'placement_drives': drives,
     })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def university_batch_upload_view(request):
+    if not _require_role(request.user, 'university'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    upload = request.FILES.get('file')
+    if not upload:
+        return Response({'error': 'CSV file is required'}, status=400)
+
+    try:
+        content = upload.read().decode('utf-8-sig')
+    except Exception:
+        return Response({'error': 'Unable to read CSV file'}, status=400)
+
+    reader = csv.DictReader(io.StringIO(content))
+    if not reader.fieldnames:
+        return Response({'error': 'CSV file must contain a header row'}, status=400)
+
+    summary = {"created": 0, "updated": 0, "skipped": 0}
+    with transaction.atomic():
+        for row in reader:
+            result, _student = _ingest_batch_row(request.user, row)
+            if result in summary:
+                summary[result] += 1
+            else:
+                summary["skipped"] += 1
+
+        try:
+            upload.seek(0)
+        except Exception:
+            pass
+        batch_upload = UniversityBatchUpload.objects.create(
+            university=request.user,
+            filename=upload.name or "cohort.csv",
+            file=upload,
+            summary=summary,
+            status='completed',
+        )
+
+    _create_notification(
+        request.user,
+        "Batch upload completed",
+        f"Created {summary['created']} and updated {summary['updated']} student records.",
+        category="university",
+        link="/university/dashboard",
+        metadata={"batch_upload_id": batch_upload.id, **summary},
+    )
+    return Response(
+        {
+            "batch_upload": _batch_upload_payload(batch_upload),
+            "summary": summary,
+        },
+        status=201,
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def university_intervention_view(request, student_id):
+    if not _require_role(request.user, 'university'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    student = User.objects.filter(role='student', id=student_id).first()
+    if not student:
+        return Response({'error': 'Student not found'}, status=404)
+
+    status_value = (request.data.get('status') or 'planned').strip() or 'planned'
+    priority = (request.data.get('priority') or 'medium').strip() or 'medium'
+    note = (request.data.get('note') or '').strip()
+    recommended_action = (request.data.get('recommended_action') or '').strip()
+
+    record, _ = InterventionRecord.objects.update_or_create(
+        university=request.user,
+        student=student,
+        defaults={
+            'status': status_value,
+            'priority': priority,
+            'note': note,
+            'recommended_action': recommended_action,
+        },
+    )
+    _create_notification(
+        student,
+        "University support plan updated",
+        f"Intervention status changed to {status_value.replace('_', ' ')}.",
+        category="student",
+        link="/dashboard/progress",
+        metadata={"priority": priority},
+    )
+    return Response({'intervention': _intervention_record_payload(record)})
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def university_placement_drives_view(request):
+    if not _require_role(request.user, 'university'):
+        return Response({'error': 'Unauthorized'}, status=403)
+
+    if request.method == 'POST':
+        company_name = (request.data.get('company_name') or '').strip()
+        role_title = (request.data.get('role_title') or '').strip()
+        if not company_name or not role_title:
+            return Response({'error': 'Company name and role title are required'}, status=400)
+        scheduled_on = None
+        scheduled_on_raw = (request.data.get('scheduled_on') or '').strip()
+        if scheduled_on_raw:
+            try:
+                scheduled_on = timezone.datetime.fromisoformat(scheduled_on_raw).date()
+            except (TypeError, ValueError):
+                scheduled_on = None
+        drive = PlacementDrive.objects.create(
+            university=request.user,
+            company_name=company_name,
+            role_title=role_title,
+            description=(request.data.get('description') or '').strip(),
+            target_branches=_normalize_string_list(request.data.get('target_branches')),
+            target_courses=_normalize_string_list(request.data.get('target_courses')),
+            minimum_ready_score=_safe_int(request.data.get('minimum_ready_score'), default=65),
+            scheduled_on=scheduled_on,
+            status=(request.data.get('status') or 'planning').strip() or 'planning',
+        )
+        students = [
+            _student_summary_payload(student)
+            for student in User.objects.filter(role='student').prefetch_related('scorecards', 'skills', 'documents')
+        ]
+        return Response({'drive': _placement_drive_payload(drive, students)}, status=201)
+
+    students = [
+        _student_summary_payload(student)
+        for student in User.objects.filter(role='student').prefetch_related('scorecards', 'skills', 'documents')
+    ]
+    drives = [
+        _placement_drive_payload(drive, students)
+        for drive in PlacementDrive.objects.filter(university=request.user)
+    ]
+    return Response({'placement_drives': drives})
 
 
 

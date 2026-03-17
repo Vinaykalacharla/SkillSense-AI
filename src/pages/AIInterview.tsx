@@ -6,6 +6,7 @@ import {
   Brain,
   CheckCircle2,
   Camera,
+  Clock3,
   MessageSquare,
   Mic,
   MicOff,
@@ -44,6 +45,18 @@ interface InterviewState {
   score?: number;
 }
 
+interface InterviewHistoryItem {
+  id: number;
+  status: 'active' | 'completed';
+  score: number;
+  answered: number;
+  questions: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  strengths: string[];
+  improvements: string[];
+}
+
 type SpeechRecognitionInstance = {
   lang: string;
   interimResults: boolean;
@@ -78,6 +91,7 @@ export default function AIInterview() {
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [metrics, setMetrics] = useState<MetricItem[]>([]);
   const [tips, setTips] = useState<string[]>([]);
+  const [history, setHistory] = useState<InterviewHistoryItem[]>([]);
   const [status, setStatus] = useState<'idle' | 'active' | 'completed'>('idle');
   const [interviewState, setInterviewState] = useState<InterviewState>({});
   const [sending, setSending] = useState(false);
@@ -245,6 +259,7 @@ export default function AIInterview() {
       feedback?: FeedbackItem[];
       metrics?: MetricItem[];
       tips?: string[];
+      history?: InterviewHistoryItem[];
     },
   ) => {
     if (data?.status) {
@@ -254,6 +269,7 @@ export default function AIInterview() {
     setFeedback(Array.isArray(data?.feedback) ? data.feedback : []);
     setMetrics(Array.isArray(data?.metrics) ? data.metrics : []);
     setTips(Array.isArray(data?.tips) ? data.tips : []);
+    setHistory(Array.isArray(data?.history) ? data.history : []);
     setInterviewState({
       total_questions: data?.total_questions,
       current_index: data?.current_index,
@@ -285,6 +301,7 @@ export default function AIInterview() {
         setFeedback([]);
         setMetrics([]);
         setTips([]);
+        setHistory([]);
         setInterviewState({});
       });
   }, []);
@@ -886,6 +903,64 @@ export default function AIInterview() {
                           className="rounded-2xl border border-border/60 bg-background/70 p-3 text-sm text-muted-foreground"
                         >
                           {tip}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </motion.div>
+
+                <motion.div
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.6, delay: 0.5 }}
+                  className="rounded-3xl border border-border/60 bg-card/70 p-6"
+                >
+                  <div className="flex items-center gap-2">
+                    <Clock3 className="h-5 w-5 text-primary" />
+                    <h3 className="text-lg font-semibold">Interview history</h3>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {history.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-border/70 bg-muted/30 p-6 text-center text-sm text-muted-foreground">
+                        Your completed interview attempts will appear here.
+                      </div>
+                    ) : (
+                      history.map((item) => (
+                        <div
+                          key={item.id}
+                          className="rounded-2xl border border-border/60 bg-background/70 p-4"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-medium">
+                                {item.completed_at ? new Date(item.completed_at).toLocaleString() : 'In progress'}
+                              </div>
+                              <div className="mt-1 text-xs text-muted-foreground">
+                                {item.answered}/{item.questions} questions answered
+                              </div>
+                            </div>
+                            <div className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                              {item.score}/100
+                            </div>
+                          </div>
+                          <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+                            <div>
+                              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                Strengths
+                              </div>
+                              <div className="mt-2 text-muted-foreground">
+                                {item.strengths.length ? item.strengths.join(', ') : 'Still building signal'}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                Improvements
+                              </div>
+                              <div className="mt-2 text-muted-foreground">
+                                {item.improvements.length ? item.improvements.join(', ') : 'No major gaps captured'}
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       ))
                     )}

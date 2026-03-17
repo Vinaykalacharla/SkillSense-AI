@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { DashboardSidebar } from '@/components/dashboard/Sidebar';
 import { BookOpen, CheckCircle2, Clock } from 'lucide-react';
+import { buildApiUrl } from '@/lib/api';
 
 interface RoadmapItem {
   title: string;
@@ -17,7 +18,7 @@ export default function DashboardRoadmap() {
     if (!token) {
       return;
     }
-    fetch('http://127.0.0.1:8000/api/skills/roadmap/', {
+    fetch(buildApiUrl('/api/skills/roadmap/'), {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())

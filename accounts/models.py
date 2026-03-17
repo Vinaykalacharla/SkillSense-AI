@@ -12,6 +12,12 @@ class User(AbstractUser):
         ('recruiter', 'Recruiter'),
     ]
 
+    APPROVAL_CHOICES = [
+        ('approved', 'Approved'),
+        ('pending', 'Pending'),
+        ('rejected', 'Rejected'),
+    ]
+
     email = models.EmailField(
         unique=True,
         help_text=_('Email address (used as username)')
@@ -43,6 +49,28 @@ class User(AbstractUser):
         choices=ROLE_CHOICES,
         default='student',
         help_text=_('User role in the system')
+    )
+    organization_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text=_('Company or institution name for recruiter/university accounts')
+    )
+    approval_status = models.CharField(
+        max_length=20,
+        choices=APPROVAL_CHOICES,
+        default='approved',
+        help_text=_('Approval workflow state for privileged accounts')
+    )
+    approved_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_('When the account was approved')
+    )
+    approval_notes = models.TextField(
+        null=True,
+        blank=True,
+        help_text=_('Admin notes for approval or rejection')
     )
     profile_verified = models.BooleanField(
         default=False,

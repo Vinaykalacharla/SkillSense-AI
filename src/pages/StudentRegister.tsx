@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { buildApiUrl } from '@/lib/api';
 
 export default function StudentRegister() {
   const navigate = useNavigate();
@@ -40,7 +41,7 @@ export default function StudentRegister() {
       payload.append('username', username);
       payload.append('role', 'student');
 
-      const response = await fetch('http://127.0.0.1:8000/api/accounts/signup/', {
+      const response = await fetch(buildApiUrl('/api/accounts/signup/'), {
         method: 'POST',
         body: payload,
       });

@@ -5,12 +5,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
+import RoleRegister from "./pages/RoleRegister";
 import StudentStart from "./pages/StudentStart";
 import StudentRegister from "./pages/StudentRegister";
 import Dashboard from "./pages/Dashboard";
 import DashboardCodeAnalysis from "./pages/DashboardCodeAnalysis";
+import DashboardMedia from "./pages/DashboardMedia";
 import DashboardProgress from "./pages/DashboardProgress";
 import DashboardRoadmap from "./pages/DashboardRoadmap";
+import DashboardResumeBuilder from "./pages/DashboardResumeBuilder";
 import DashboardSettings from "./pages/DashboardSettings";
 import SkillPassport from "./pages/SkillPassport";
 import AIInterview from "./pages/AIInterview";
@@ -32,13 +35,17 @@ const App = () => (
           <Route path="/student" element={<Login />} />
           <Route path="/student/register" element={<StudentRegister />} />
           <Route path="/university" element={<Login />} />
+          <Route path="/university/register" element={<RoleRegister />} />
           <Route path="/recruiter" element={<Login />} />
+          <Route path="/recruiter/register" element={<RoleRegister />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/dashboard/code" element={<DashboardCodeAnalysis />} />
+          <Route path="/dashboard/media" element={<DashboardMedia />} />
           <Route path="/dashboard/passport" element={<SkillPassport />} />
           <Route path="/dashboard/interview" element={<AIInterview />} />
           <Route path="/dashboard/progress" element={<DashboardProgress />} />
           <Route path="/dashboard/roadmap" element={<DashboardRoadmap />} />
+          <Route path="/dashboard/resume-builder" element={<DashboardResumeBuilder />} />
           <Route path="/dashboard/settings" element={<DashboardSettings />} />
           <Route path="/recruiter/dashboard" element={<RecruiterDashboard />} />
           <Route path="/university/dashboard" element={<UniversityDashboard />} />

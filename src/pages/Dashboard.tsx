@@ -8,10 +8,32 @@ import { RecentActivity } from '@/components/dashboard/RecentActivity';
 import { RecommendedActions } from '@/components/dashboard/RecommendedActions';
 import { VerificationTimeline } from '@/components/dashboard/VerificationTimeline';
 import { PerformanceTrends } from '@/components/dashboard/PerformanceTrends';
-import { Bell, Search, User, RefreshCcw, ShieldCheck, LogOut } from 'lucide-react';
+import { Bell, Search, User, RefreshCcw, ShieldCheck, LogOut, FileText, CalendarClock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { buildApiUrl } from '@/lib/api';
+
+interface NotificationItem {
+  id: number;
+  title: string;
+  message: string;
+  category: string;
+  link?: string;
+  read: boolean;
+  created_at?: string | null;
+}
+
+interface InterviewScheduleItem {
+  id: number;
+  title: string;
+  recruiter_name: string;
+  job_title: string;
+  scheduled_at: string | null;
+  duration_minutes: number;
+  meeting_link: string;
+  notes: string;
+  status: 'scheduled' | 'completed' | 'cancelled';
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -22,7 +44,13 @@ export default function Dashboard() {
   const [downloading, setDownloading] = useState(false);
   const [profileVerified, setProfileVerified] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [scheduledInterviews, setScheduledInterviews] = useState<InterviewScheduleItem[]>([]);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const notificationPanelRef = useRef<HTMLDivElement | null>(null);
   const [githubInsights, setGithubInsights] = useState<{
     top_languages: Array<[string, number]>;
     forked: number;
@@ -72,23 +100,54 @@ export default function Dashboard() {
       .catch(() => {
         // Keep fallback data on network error.
       });
+
+    setNotificationsLoading(true);
+    fetch(buildApiUrl('/api/skills/notifications/'), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        setNotifications(Array.isArray(data?.notifications) ? data.notifications : []);
+        setUnreadCount(typeof data?.unread_count === 'number' ? data.unread_count : 0);
+      })
+      .catch(() => {
+        setNotifications([]);
+        setUnreadCount(0);
+      })
+      .finally(() => setNotificationsLoading(false));
+
+    fetch(buildApiUrl('/api/skills/interview-schedules/'), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        setScheduledInterviews(Array.isArray(data?.schedules) ? data.schedules : []);
+      })
+      .catch(() => {
+        setScheduledInterviews([]);
+      });
   }, []);
 
   useEffect(() => {
-    if (!profileMenuOpen) {
+    if (!profileMenuOpen && !notificationsOpen) {
       return;
     }
     const handleClickOutside = (event: MouseEvent) => {
-      if (!profileMenuRef.current) {
-        return;
-      }
-      if (!profileMenuRef.current.contains(event.target as Node)) {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) {
         setProfileMenuOpen(false);
+      }
+      if (notificationPanelRef.current && !notificationPanelRef.current.contains(event.target as Node)) {
+        setNotificationsOpen(false);
       }
     };
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setProfileMenuOpen(false);
+        setNotificationsOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -97,7 +156,7 @@ export default function Dashboard() {
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [profileMenuOpen]);
+  }, [notificationsOpen, profileMenuOpen]);
 
   const handleRecalculate = () => {
     const token = localStorage.getItem('accessToken');
@@ -181,6 +240,29 @@ export default function Dashboard() {
     }
   };
 
+  const handleNotificationsOpen = async () => {
+    setNotificationsOpen((current) => !current);
+    if (unreadCount === 0) {
+      return;
+    }
+    const token = localStorage.getItem('accessToken');
+    if (!token) {
+      return;
+    }
+    try {
+      await fetch(buildApiUrl('/api/skills/notifications/0/read/'), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      setUnreadCount(0);
+      setNotifications((current) => current.map((item) => ({ ...item, read: true })));
+    } catch (error) {
+      // Leave current unread state in place on failure.
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
@@ -219,10 +301,70 @@ export default function Dashboard() {
             >
               {downloading ? 'Downloading...' : 'Export PDF'}
             </Button>
-            <Button variant="ghost" size="icon" className="relative">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-primary rounded-full" />
-            </Button>
+            <div className="relative" ref={notificationPanelRef}>
+              <Button variant="ghost" size="icon" className="relative" onClick={handleNotificationsOpen}>
+                <Bell className="w-5 h-5" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[18px] rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </Button>
+              {notificationsOpen && (
+                <div className="absolute right-0 mt-2 w-[340px] rounded-2xl border border-border/60 bg-background/95 p-3 shadow-xl backdrop-blur">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold">Notifications</div>
+                      <div className="text-xs text-muted-foreground">Recent workflow updates</div>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {notificationsLoading ? (
+                      <div className="rounded-2xl border border-dashed border-border/60 bg-muted/20 p-4 text-sm text-muted-foreground">
+                        Loading notifications...
+                      </div>
+                    ) : notifications.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-border/60 bg-muted/20 p-4 text-sm text-muted-foreground">
+                        No notifications yet.
+                      </div>
+                    ) : (
+                      notifications.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            setNotificationsOpen(false);
+                            if (item.link) {
+                              navigate(item.link);
+                            }
+                          }}
+                          className={`w-full rounded-2xl border p-3 text-left transition-colors ${
+                            item.read
+                              ? 'border-border/50 bg-card/40'
+                              : 'border-primary/30 bg-primary/5'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="font-medium">{item.title}</div>
+                              <div className="mt-1 text-sm text-muted-foreground">{item.message}</div>
+                            </div>
+                            <span className="rounded-full bg-muted/60 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                              {item.category}
+                            </span>
+                          </div>
+                          {item.created_at && (
+                            <div className="mt-2 text-xs text-muted-foreground">
+                              {new Date(item.created_at).toLocaleString()}
+                            </div>
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="relative" ref={profileMenuRef}>
               <button
                 type="button"
@@ -447,6 +589,48 @@ export default function Dashboard() {
                 )}
               </div>
               <RecommendedActions />
+              <div className="glass-card p-6">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-primary" />
+                  <h3 className="font-semibold">Resume Builder</h3>
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  Convert your latest verified profile into a recruiter-ready resume.
+                </p>
+                <Button variant="outline" className="mt-4" onClick={() => navigate('/dashboard/resume-builder')}>
+                  Open Resume Builder
+                </Button>
+              </div>
+              <div className="glass-card p-6">
+                <div className="flex items-center gap-2">
+                  <CalendarClock className="w-5 h-5 text-primary" />
+                  <h3 className="font-semibold">Upcoming Interviews</h3>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {scheduledInterviews.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">
+                      No recruiter interviews are scheduled yet.
+                    </div>
+                  ) : (
+                    scheduledInterviews.slice(0, 3).map((item) => (
+                      <div key={item.id} className="rounded-2xl border border-border/60 bg-card/40 p-4">
+                        <div className="font-medium">{item.title}</div>
+                        <div className="mt-1 text-sm text-muted-foreground">
+                          {item.recruiter_name} • {item.job_title || 'General interview'}
+                        </div>
+                        <div className="mt-2 text-sm text-muted-foreground">
+                          {item.scheduled_at ? new Date(item.scheduled_at).toLocaleString() : 'TBD'} • {item.duration_minutes} min
+                        </div>
+                        {item.meeting_link && (
+                          <a href={item.meeting_link} target="_blank" rel="noreferrer" className="mt-3 inline-flex text-sm text-primary hover:underline">
+                            Join meeting
+                          </a>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
               <VerificationTimeline />
             </div>
           </div>

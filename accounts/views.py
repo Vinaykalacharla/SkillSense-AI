@@ -2,6 +2,7 @@ import io
 import os
 import re
 from datetime import timedelta
+from django.db import transaction
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -269,6 +270,65 @@ def _extract_resume_fields(text):
 
     return fields
 
+
+def _resume_document_payload(user):
+    resume_document = user.documents.filter(doc_type='resume').first()
+    if not resume_document or not resume_document.file:
+        return None
+    return {
+        'filename': resume_document.title or os.path.basename(resume_document.file.name or 'resume'),
+        'uploaded_at': resume_document.created_at.isoformat() if resume_document.created_at else None,
+        'download_path': '/api/skills/resume/',
+    }
+
+
+def _approval_defaults(role):
+    if role == 'student':
+        return {
+            'approval_status': 'approved',
+            'approved_at': timezone.now(),
+        }
+    return {
+        'approval_status': 'pending',
+        'approved_at': None,
+    }
+
+
+def _user_payload(user):
+    return {
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'role': user.role,
+        'organization_name': user.organization_name,
+        'approval_status': user.approval_status,
+        'approved_at': user.approved_at.isoformat() if user.approved_at else None,
+        'approval_notes': user.approval_notes,
+        'full_name': user.full_name,
+        'profile_verified': user.profile_verified,
+        'gender': user.gender,
+        'phone_number': user.phone_number,
+        'college': user.college,
+        'course': user.course,
+        'branch': user.branch,
+        'year_of_study': user.year_of_study,
+        'cgpa': user.cgpa,
+        'student_skills': user.student_skills,
+        'github_link': user.github_link,
+        'leetcode_link': user.leetcode_link,
+        'linkedin_link': user.linkedin_link,
+        'linkedin_headline': user.linkedin_headline,
+        'linkedin_about': user.linkedin_about,
+        'linkedin_experience_count': user.linkedin_experience_count,
+        'linkedin_skill_count': user.linkedin_skill_count,
+        'linkedin_cert_count': user.linkedin_cert_count,
+        'codechef_link': user.codechef_link,
+        'hackerrank_link': user.hackerrank_link,
+        'codeforces_link': user.codeforces_link,
+        'gfg_link': user.gfg_link,
+        'resume_document': _resume_document_payload(user),
+    }
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def signup_view(request):
@@ -278,13 +338,20 @@ def signup_view(request):
     username = request.data.get('username')
     email = request.data.get('email')
     password = request.data.get('password')
-    role = request.data.get('role', 'student')
+    role = (request.data.get('role', 'student') or 'student').strip()
+    if role not in {'student', 'recruiter', 'university'}:
+        return Response(
+            {'error': 'Invalid role selected'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
     resume_file = request.FILES.get('resume') or request.data.get('resume')
+    resume_upload = resume_file if hasattr(resume_file, 'read') and getattr(resume_file, 'name', None) else None
 
-    parsed_fields = _extract_resume_fields(_extract_text_from_resume(resume_file))
+    parsed_fields = _extract_resume_fields(_extract_text_from_resume(resume_upload))
 
     # Student-specific fields
     full_name = request.data.get('full_name') or parsed_fields.get("full_name")
+    organization_name = request.data.get('organization_name')
     gender = request.data.get('gender')
     phone_number = request.data.get('phone_number') or parsed_fields.get("phone_number")
     college = request.data.get('college') or parsed_fields.get("college")
@@ -319,6 +386,12 @@ def signup_view(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    if role in {'recruiter', 'university'} and not organization_name:
+        return Response(
+            {'error': 'Organization name is required for recruiter and university accounts'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     if CustomUser.objects.filter(username=username).exists():
         return Response(
             {'error': 'Username already exists'},
@@ -332,67 +405,67 @@ def signup_view(request):
         )
 
     try:
-        user = CustomUser.objects.create(
-            username=username,
-            email=email,
-            password=make_password(password),
-            role=role,
-            full_name=full_name,
-            gender=gender,
-            phone_number=phone_number,
-            college=college,
-            course=course,
-            branch=branch,
-            year_of_study=year_of_study,
-            cgpa=cgpa,
-            student_skills=student_skills,
-            github_link=github_link,
-            leetcode_link=leetcode_link,
-            linkedin_link=linkedin_link,
-            linkedin_headline=linkedin_headline,
-            linkedin_about=linkedin_about,
-            linkedin_experience_count=linkedin_experience_count,
-            linkedin_skill_count=linkedin_skill_count,
-            linkedin_cert_count=linkedin_cert_count,
-            codechef_link=codechef_link,
-            hackerrank_link=hackerrank_link,
-            codeforces_link=codeforces_link,
-            gfg_link=gfg_link
-        )
-        scores = upsert_scorecards(user) if user.role == 'student' else {}
-        refresh = RefreshToken.for_user(user)
+        with transaction.atomic():
+            approval_defaults = _approval_defaults(role)
+            user = CustomUser.objects.create(
+                username=username,
+                email=email,
+                password=make_password(password),
+                role=role,
+                organization_name=organization_name,
+                approval_status=approval_defaults['approval_status'],
+                approved_at=approval_defaults['approved_at'],
+                full_name=full_name,
+                gender=gender,
+                phone_number=phone_number,
+                college=college,
+                course=course,
+                branch=branch,
+                year_of_study=year_of_study,
+                cgpa=cgpa,
+                student_skills=student_skills,
+                github_link=github_link,
+                leetcode_link=leetcode_link,
+                linkedin_link=linkedin_link,
+                linkedin_headline=linkedin_headline,
+                linkedin_about=linkedin_about,
+                linkedin_experience_count=linkedin_experience_count,
+                linkedin_skill_count=linkedin_skill_count,
+                linkedin_cert_count=linkedin_cert_count,
+                codechef_link=codechef_link,
+                hackerrank_link=hackerrank_link,
+                codeforces_link=codeforces_link,
+                gfg_link=gfg_link
+            )
+            if resume_upload:
+                from skills.models import Document
+
+                try:
+                    resume_upload.seek(0)
+                except Exception:
+                    pass
+                Document.objects.create(
+                    user=user,
+                    title=os.path.basename(resume_upload.name or 'resume'),
+                    doc_type='resume',
+                    file=resume_upload,
+                    status='uploaded',
+                    notes='Resume uploaded during signup.',
+                )
+            scores = upsert_scorecards(user) if user.role == 'student' else {}
+            if user.role == 'student':
+                refresh = RefreshToken.for_user(user)
+                return Response({
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                    'user': _user_payload(user),
+                    'scores': scores
+                }, status=status.HTTP_201_CREATED)
+
         return Response({
-            'refresh': str(refresh),
-            'access': str(refresh.access_token),
-            'user': {
-                'id': user.id,
-                'username': user.username,
-                'email': user.email,
-                'role': user.role,
-                'full_name': user.full_name,
-                'profile_verified': user.profile_verified,
-                'gender': user.gender,
-                'phone_number': user.phone_number,
-                'college': user.college,
-                'course': user.course,
-                'branch': user.branch,
-                'year_of_study': user.year_of_study,
-                'cgpa': user.cgpa,
-                'student_skills': user.student_skills,
-                'github_link': user.github_link,
-                'leetcode_link': user.leetcode_link,
-                'linkedin_link': user.linkedin_link,
-                'linkedin_headline': user.linkedin_headline,
-                'linkedin_about': user.linkedin_about,
-                'linkedin_experience_count': user.linkedin_experience_count,
-                'linkedin_skill_count': user.linkedin_skill_count,
-                'linkedin_cert_count': user.linkedin_cert_count,
-                'codechef_link': user.codechef_link,
-                'hackerrank_link': user.hackerrank_link,
-                'codeforces_link': user.codeforces_link,
-                'gfg_link': user.gfg_link,
-            },
-            'scores': scores
+            'message': 'Account created and submitted for approval.',
+            'requires_approval': True,
+            'user': _user_payload(user),
         }, status=status.HTTP_201_CREATED)
     except Exception as e:
         if os.environ.get("DJANGO_DEBUG_ERRORS", "0").lower() in {"1", "true", "yes"}:
@@ -424,19 +497,26 @@ def login_view(request):
         user = authenticate(username=email, password=password)
 
         if user is not None:
+            if user.role in {'recruiter', 'university'} and user.approval_status != 'approved':
+                message = (
+                    'Your account is pending approval.'
+                    if user.approval_status == 'pending'
+                    else 'Your account approval request was rejected.'
+                )
+                return Response(
+                    {
+                        'error': message,
+                        'approval_status': user.approval_status,
+                        'user': _user_payload(user),
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
             refresh = RefreshToken.for_user(user)
             return Response({
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                'email': user.email,
-                'role': user.role,
-                'full_name': user.full_name,
-                'profile_verified': user.profile_verified,
-            }
-        })
+                'user': _user_payload(user),
+            })
         else:
             return Response(
                 {'error': 'Invalid credentials'},
@@ -470,39 +550,7 @@ def logout_view(request):
 def profile_view(request):
     user = request.user
     return Response({
-        'user': {
-            'id': user.id,
-            'username': user.username,
-            'email': user.email,
-            'role': user.role,
-            'full_name': user.full_name,
-            'profile_verified': user.profile_verified,
-            'gender': user.gender,
-            'phone_number': user.phone_number,
-            'college': user.college,
-            'course': user.course,
-            'branch': user.branch,
-            'year_of_study': user.year_of_study,
-            'cgpa': user.cgpa,
-            'student_skills': user.student_skills,
-            'github_link': user.github_link,
-            'leetcode_link': user.leetcode_link,
-            'linkedin_link': user.linkedin_link,
-            'linkedin_headline': user.linkedin_headline,
-            'linkedin_about': user.linkedin_about,
-            'linkedin_experience_count': user.linkedin_experience_count,
-            'linkedin_skill_count': user.linkedin_skill_count,
-            'linkedin_cert_count': user.linkedin_cert_count,
-            'codechef_link': user.codechef_link,
-            'hackerrank_link': user.hackerrank_link,
-            'codeforces_link': user.codeforces_link,
-            'gfg_link': user.gfg_link,
-            'linkedin_headline': user.linkedin_headline,
-            'linkedin_about': user.linkedin_about,
-            'linkedin_experience_count': user.linkedin_experience_count,
-            'linkedin_skill_count': user.linkedin_skill_count,
-            'linkedin_cert_count': user.linkedin_cert_count,
-        }
+        'user': _user_payload(user)
     })
 
 
@@ -511,7 +559,7 @@ def profile_view(request):
 def profile_update_view(request):
     user = request.user
     fields = [
-        'full_name', 'gender', 'phone_number', 'college', 'course', 'branch',
+        'full_name', 'organization_name', 'gender', 'phone_number', 'college', 'course', 'branch',
         'year_of_study', 'cgpa', 'student_skills', 'github_link', 'leetcode_link',
         'linkedin_link', 'codechef_link', 'hackerrank_link', 'codeforces_link',
         'gfg_link', 'linkedin_headline', 'linkedin_about',
@@ -545,6 +593,8 @@ def dashboard_view(request):
             'email': user.email,
             'role': user.role,
             'profile_verified': user.profile_verified,
+            'approval_status': user.approval_status,
+            'organization_name': user.organization_name,
         },
         'scores': scores,
         'breakdown': score_breakdown(user) if user.role == 'student' else {},

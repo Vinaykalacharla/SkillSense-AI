@@ -9,15 +9,19 @@ import {
   ChevronLeft,
   Sparkles,
   Code,
+  FileText,
   TrendingUp,
   BookOpen,
+  Video,
 } from 'lucide-react';
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
   { icon: Code, label: 'Code Analysis', href: '/dashboard/code' },
+  { icon: Video, label: 'Media', href: '/dashboard/media' },
   { icon: Mic, label: 'AI Interview', href: '/dashboard/interview' },
   { icon: BadgeCheck, label: 'Skill Passport', href: '/dashboard/passport' },
+  { icon: FileText, label: 'Resume Builder', href: '/dashboard/resume-builder' },
   { icon: TrendingUp, label: 'Progress', href: '/dashboard/progress' },
   { icon: BookOpen, label: 'Roadmap', href: '/dashboard/roadmap' },
   { icon: Settings, label: 'Settings', href: '/dashboard/settings' },

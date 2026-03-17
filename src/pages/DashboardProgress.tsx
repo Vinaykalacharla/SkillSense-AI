@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { DashboardSidebar } from '@/components/dashboard/Sidebar';
 import { TrendingUp } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { buildApiUrl } from '@/lib/api';
 
 interface ProgressResponse {
   series: Array<Record<string, number | string>>;
@@ -18,7 +19,7 @@ export default function DashboardProgress() {
     if (!token) {
       return;
     }
-    fetch('http://127.0.0.1:8000/api/skills/progress/', {
+    fetch(buildApiUrl('/api/skills/progress/'), {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())

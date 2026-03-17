@@ -7,12 +7,13 @@ import { UserTypes } from '@/components/landing/UserTypes';
 import { Testimonials } from '@/components/landing/Testimonials';
 import { AboutSection } from '@/components/landing/AboutSection';
 import { CTASection } from '@/components/landing/CTASection';
+import { buildApiUrl } from '@/lib/api';
 
 const Index = () => {
   const [content, setContent] = useState<Record<string, any>>({});
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/content/landing/')
+    fetch(buildApiUrl('/api/content/landing/'))
       .then((res) => res.json())
       .then((data) => setContent(data || {}))
       .catch(() => setContent({}));

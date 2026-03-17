@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { DashboardSidebar } from '@/components/dashboard/Sidebar';
-import { Settings, Save } from 'lucide-react';
+import { Download, Save, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { buildApiUrl } from '@/lib/api';
 
 export default function DashboardSettings() {
   const [profile, setProfile] = useState<Record<string, any> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [downloadingResume, setDownloadingResume] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('accessToken');
     if (!token) {
       return;
     }
-    fetch('http://127.0.0.1:8000/api/accounts/profile/', {
+    fetch(buildApiUrl('/api/accounts/profile/'), {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())
@@ -30,7 +32,7 @@ export default function DashboardSettings() {
     }
     setSaving(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/accounts/profile/update/', {
+      const res = await fetch(buildApiUrl('/api/accounts/profile/update/'), {
         method: 'PATCH',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -44,6 +46,33 @@ export default function DashboardSettings() {
       }
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleDownloadResume = async () => {
+    const token = localStorage.getItem('accessToken');
+    if (!token || !profile?.resume_document) {
+      return;
+    }
+    setDownloadingResume(true);
+    try {
+      const res = await fetch(buildApiUrl('/api/skills/resume/'), {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        throw new Error('Unable to download resume.');
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = profile.resume_document.filename || 'resume';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingResume(false);
     }
   };
 
@@ -185,6 +214,32 @@ export default function DashboardSettings() {
                     rows={3}
                     className="md:col-span-2"
                   />
+                </div>
+
+                <div className="rounded-2xl border border-border/60 bg-card/40 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <div className="font-medium">Resume on file</div>
+                      {profile.resume_document ? (
+                        <div className="text-sm text-muted-foreground">
+                          {profile.resume_document.filename}
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">
+                          No original resume is stored for this account yet.
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleDownloadResume}
+                      disabled={downloadingResume || !profile.resume_document}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      {downloadingResume ? 'Downloading...' : 'Download Resume'}
+                    </Button>
+                  </div>
                 </div>
 
                 <Button onClick={handleSave} disabled={saving}>
