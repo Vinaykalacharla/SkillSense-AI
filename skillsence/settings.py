@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 import os
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -54,6 +55,62 @@ def _env_list(name, default=None):
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _env_int(name, default=0):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _database_from_url(url):
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").split("+", 1)[0].lower()
+    if scheme in {"sqlite", "sqlite3"}:
+        database_name = unquote((parsed.path or "").lstrip("/")) or unquote(parsed.netloc or "")
+        if not database_name:
+            raise ImproperlyConfigured("DATABASE_URL for sqlite must include a database path.")
+        if database_name != ":memory:" and not os.path.isabs(database_name):
+            database_name = str(BASE_DIR / database_name)
+        return {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": database_name,
+            "OPTIONS": {"timeout": 20},
+        }
+
+    engines = {
+        "postgres": "django.db.backends.postgresql",
+        "postgresql": "django.db.backends.postgresql",
+        "pgsql": "django.db.backends.postgresql",
+        "mysql": "django.db.backends.mysql",
+    }
+    engine = engines.get(scheme)
+    if not engine:
+        raise ImproperlyConfigured(f"Unsupported DATABASE_URL scheme: {scheme or 'unknown'}")
+
+    options = {}
+    for key, value in parse_qsl(parsed.query or "", keep_blank_values=False):
+        if key == "sslmode":
+            options["sslmode"] = value
+        elif key == "connect_timeout":
+            options["connect_timeout"] = int(value)
+
+    database = {
+        "ENGINE": engine,
+        "NAME": unquote((parsed.path or "").lstrip("/")),
+        "USER": unquote(parsed.username or ""),
+        "PASSWORD": unquote(parsed.password or ""),
+        "HOST": parsed.hostname or "",
+        "PORT": str(parsed.port or ""),
+        "CONN_MAX_AGE": _env_int("DJANGO_DB_CONN_MAX_AGE", 60 if not DEBUG else 0),
+    }
+    if options:
+        database["OPTIONS"] = options
+    return database
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -83,6 +140,22 @@ CORS_ALLOWED_ORIGINS = _env_list(
     ] if DEBUG else [],
 )
 CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS", CORS_ALLOWED_ORIGINS)
+SECURE_SSL_REDIRECT = _env_bool("DJANGO_SECURE_SSL_REDIRECT", not DEBUG)
+SESSION_COOKIE_SECURE = _env_bool("DJANGO_SESSION_COOKIE_SECURE", not DEBUG)
+CSRF_COOKIE_SECURE = _env_bool("DJANGO_CSRF_COOKIE_SECURE", not DEBUG)
+SECURE_HSTS_SECONDS = _env_int("DJANGO_SECURE_HSTS_SECONDS", 0 if DEBUG else 31536000)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", not DEBUG)
+SECURE_HSTS_PRELOAD = _env_bool("DJANGO_SECURE_HSTS_PRELOAD", not DEBUG)
+SECURE_CONTENT_TYPE_NOSNIFF = _env_bool("DJANGO_SECURE_CONTENT_TYPE_NOSNIFF", True)
+USE_X_FORWARDED_HOST = _env_bool("DJANGO_USE_X_FORWARDED_HOST", not DEBUG)
+SECURE_PROXY_SSL_HEADER = (
+    ("HTTP_X_FORWARDED_PROTO", "https")
+    if _env_bool("DJANGO_SECURE_PROXY_SSL_HEADER", not DEBUG)
+    else None
+)
+SESSION_COOKIE_SAMESITE = os.environ.get("DJANGO_SESSION_COOKIE_SAMESITE", "Lax")
+CSRF_COOKIE_SAMESITE = os.environ.get("DJANGO_CSRF_COOKIE_SAMESITE", "Lax")
+X_FRAME_OPTIONS = os.environ.get("DJANGO_X_FRAME_OPTIONS", "DENY")
 
 
 # Application definition
@@ -119,7 +192,7 @@ ROOT_URLCONF = 'skillsence.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [BASE_DIR / 'dist', BASE_DIR / 'templates'],
+        'DIRS': [path for path in [BASE_DIR / 'dist', BASE_DIR / 'templates'] if path.exists()],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -139,7 +212,9 @@ WSGI_APPLICATION = 'skillsence.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
-    'default': {
+    'default': _database_from_url(os.environ["DATABASE_URL"])
+    if os.environ.get("DATABASE_URL")
+    else {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
         'OPTIONS': {
@@ -184,7 +259,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = '/static/'
-STATICFILES_DIRS = [BASE_DIR / 'dist', BASE_DIR / 'static']
+STATICFILES_DIRS = [path for path in [BASE_DIR / 'dist', BASE_DIR / 'static'] if path.exists()]
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'

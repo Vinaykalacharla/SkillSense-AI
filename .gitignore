@@ -11,6 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+__pycache__/
+*.py[cod]
+db.sqlite3
+media/
+django.server.pid
 
 # Editor directories and files
 .vscode/*

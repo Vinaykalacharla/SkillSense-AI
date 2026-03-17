@@ -3,6 +3,8 @@ djangorestframework
 djangorestframework-simplejwt
 django-allauth
 django-cors-headers
+gunicorn
+psycopg[binary]
 Pillow
 reportlab
 matplotlib

@@ -2,6 +2,7 @@ from django.test import TestCase
 from django.utils import timezone
 from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
+from unittest.mock import patch
 
 from accounts.models import User
 from .models import (
@@ -13,6 +14,7 @@ from .models import (
     PlacementDrive,
     RecruiterCandidatePipeline,
     RecruiterJob,
+    RepoFileSnapshot,
     ScoreCard,
     ScoreSnapshot,
     Skill,
@@ -398,3 +400,112 @@ class RecruiterUniversityDashboardTests(TestCase):
         self.assertTrue(
             PlacementDrive.objects.filter(university=self.university, company_name="Acme Corp").exists()
         )
+
+    @patch("skills.views._analyze_repository_work")
+    def test_code_analysis_returns_deep_repo_review(self, mocked_analysis):
+        mocked_analysis.return_value = {
+            "repo_name": "platform-api",
+            "repo_url": "https://github.com/studentone/platform-api",
+            "summary": "Solid Django API structure with a few maintainability risks in settings and auth modules.",
+            "engineering_score": 81,
+            "maintainability_score": 78,
+            "security_score": 74,
+            "testing_score": 65,
+            "documentation_score": 70,
+            "architecture_score": 85,
+            "originality_score": 88,
+            "ai_generated": "unlikely",
+            "ai_confidence": 18,
+            "languages": ["Python", "TypeScript"],
+            "files_analyzed": 6,
+            "lines_analyzed": 920,
+            "tree_overview": {"total_files": 22, "test_files": 3},
+            "commit_activity": {"sample_size": 8, "message_quality": "strong"},
+            "architecture": ["Django backend", "React frontend"],
+            "strengths": ["Repository has baseline onboarding documentation."],
+            "risks": ["2 reviewed files still carry medium or high review risk."],
+            "recommendations": ["Break large source files into smaller modules with tighter responsibilities."],
+            "file_reviews": [
+                {
+                    "path": "accounts/views.py",
+                    "role": "source",
+                    "score": 63,
+                    "risk_level": "medium",
+                    "lines": 180,
+                    "strengths": ["Implementation is reasonably segmented into functions."],
+                    "risks": ["Debug statements are still committed."],
+                    "summary": "Application source file with 180 lines, 1 positive signal, and 1 review risk.",
+                }
+            ],
+            "ai_review": {
+                "summary": "AI review agrees the repo is structured but needs better testing around auth boundaries.",
+                "strengths": ["Clear backend separation."],
+                "concerns": ["Settings and auth deserve deeper tests."],
+                "next_steps": ["Add auth regression tests."],
+            },
+            "stars": 3,
+            "forks": 1,
+            "open_issues": 0,
+            "default_branch": "main",
+            "pushed_at": timezone.now().isoformat(),
+        }
+
+        self.client.force_authenticate(user=self.student_one)
+        response = self.client.post(
+            "/api/skills/code-analysis/",
+            {"repo_url": "https://github.com/studentone/platform-api"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["score"], 81)
+        self.assertIn("file_reviews", payload["metrics"])
+        self.assertEqual(payload["metrics"]["architecture"][0], "Django backend")
+        report = CodeAnalysisReport.objects.get(user=self.student_one, repo_url="https://github.com/studentone/platform-api")
+        self.assertEqual(report.score, 81)
+        self.assertEqual(report.metrics["ai_review"]["next_steps"][0], "Add auth regression tests.")
+
+    def test_code_analysis_file_preview_returns_snapshot(self):
+        report = CodeAnalysisReport.objects.create(
+            user=self.student_one,
+            repo_url="https://github.com/studentone/platform-api",
+            summary="Detailed engineering review.",
+            score=84,
+            metrics={
+                "file_reviews": [
+                    {
+                        "path": "accounts/views.py",
+                        "role": "source",
+                        "score": 72,
+                        "risk_level": "medium",
+                        "lines": 120,
+                        "strengths": ["Implementation is reasonably segmented into functions."],
+                        "risks": ["Debug statements are still committed."],
+                        "summary": "Application source file with 120 lines, 1 positive signal, and 1 review risk.",
+                    }
+                ]
+            },
+            status="completed",
+        )
+        RepoFileSnapshot.objects.create(
+            user=self.student_one,
+            repo_url=report.repo_url,
+            path="accounts/views.py",
+            sha="abc123",
+            content="def sample_view(request):\n    return {'ok': True}\n",
+            size=52,
+            lines=2,
+        )
+        self.client.force_authenticate(user=self.student_one)
+
+        response = self.client.get(
+            f"/api/skills/code-analysis/{report.id}/file/",
+            {"path": "accounts/views.py"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["path"], "accounts/views.py")
+        self.assertIn("sample_view", payload["preview"])
+        self.assertEqual(payload["review"]["risk_level"], "medium")

@@ -1,110 +1,172 @@
-# Skillsence AI (SkillSense-AI)
+# SkillSense AI
 
-Skillsence AI is a full‑stack platform for student skill verification and interview readiness. It combines a React + Vite frontend with a Django REST backend to analyze profiles, score skills, and run AI‑assisted interviews.
+SkillSense AI is a full-stack platform for student skill verification, repository review, interview readiness, and recruiter/university operations. It uses a React + Vite frontend and a Django REST backend.
 
 ## Highlights
 
-- Resume‑driven onboarding that auto‑fills profile details.
+- Resume-driven student onboarding with profile extraction.
 - Skill scoring across coding, communication, authenticity, and placement readiness.
-- AI interview simulator with adaptive follow‑ups and feedback.
-- Platform insights for students, recruiters, and universities.
-- Skill passport PDF reports and performance trends.
+- Deep GitHub repository review with file-level findings, commit signals, and optional AI coaching.
+- AI interview simulator with feedback, metrics, and session history.
+- Recruiter workflows for job briefs, candidate pipeline, saved searches, and interview scheduling.
+- University workflows for analytics, interventions, batch uploads, and placement drives.
 
 ## Tech Stack
 
-Frontend:
-- React + TypeScript (Vite)
-- Tailwind CSS + shadcn‑ui
+### Frontend
 
-Backend:
-- Django + Django REST Framework
-- SimpleJWT for auth
-- SQLite (default local)
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
 
-## Features
+### Backend
 
-- **Student registration** with resume parsing (PDF/DOCX/TXT).
-- **AI interview** sessions with real‑time feedback, metrics, and tips.
-- **Skill scoring** based on linked platforms and interview responses.
-- **Dashboards** for students, recruiters, and universities.
-- **Reports**: skill passport PDF + score summaries.
+- Django
+- Django REST Framework
+- SimpleJWT
+- SQLite by default, `DATABASE_URL` support for production databases
 
 ## Project Structure
 
-- `src/` – React frontend
-- `skillsence/` – Django project settings
-- `accounts/` – auth + profile APIs
-- `skills/` – scoring, interview, skill passport, media endpoints
-- `templates/`, `static/`, `staticfiles/` – Django assets
+- `src/` - React frontend
+- `skillsence/` - Django settings and project entrypoints
+- `accounts/` - authentication, profile, and scoring APIs
+- `skills/` - repository analysis, interviews, dashboards, reports, and workflow APIs
+- `content/` - public landing-page content blocks
 
-## Getting Started (Local)
+## Local Setup
 
-### Backend (Django)
+### Backend
 
 ```sh
-# Create and activate a virtual environment
 python -m venv .venv
-# Windows
 .venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Apply migrations
 python manage.py migrate
-
-# Run backend
 python manage.py runserver
 ```
 
-Backend runs at `http://127.0.0.1:8000`.
+Backend default: `http://127.0.0.1:8000`
 
-### Frontend (Vite)
+### Frontend
 
 ```sh
-# Install dependencies
 npm install
-
-# Start frontend
 npm run dev
 ```
 
-Frontend runs at `http://127.0.0.1:5173` (default Vite port).
+Frontend default: `http://127.0.0.1:5173`
 
 ## Environment Variables
 
-Create a `.env.local` (frontend) or set env vars in your shell for the backend.
+Use `.env.example` as the starting point.
 
-Backend (Django):
-- `OPENAI_API_KEY` – enables AI question generation and follow‑ups.
-- `OPENAI_MODEL` – default: `gpt-4o-mini`.
-- `OPENAI_API_BASE` – optional, default `https://api.openai.com/v1`.
-- `GITHUB_TOKEN` – optional for GitHub analysis.
-- `AI_REPO_CACHE_ENABLED` – default `true`.
-- `AI_REPO_CACHE_CHARS` – repo snapshot limit, default `20000`.
-- `AI_REPO_CHUNK_CHARS` – chunk size for code analysis, default `6000`.
+### Core Django
 
-## Key API Endpoints
+- `DJANGO_DEBUG`
+- `DJANGO_SECRET_KEY`
+- `DJANGO_ALLOWED_HOSTS`
+- `DJANGO_CORS_ALLOWED_ORIGINS`
+- `DJANGO_CSRF_TRUSTED_ORIGINS`
+- `DATABASE_URL`
 
-- `POST /api/accounts/signup/` – register user
-- `POST /api/accounts/login/` – login
-- `GET /api/accounts/profile/` – profile
-- `PATCH /api/accounts/profile/` – update profile
-- `GET /api/skills/ai-interview/` – interview session state
-- `POST /api/skills/ai-interview/action/` – start/respond/finish interview
-- `GET /api/skills/skill-passport/pdf/` – PDF export
+### Production Security
 
-## AI Interview Flow
+- `DJANGO_SECURE_SSL_REDIRECT`
+- `DJANGO_SESSION_COOKIE_SECURE`
+- `DJANGO_CSRF_COOKIE_SECURE`
+- `DJANGO_SECURE_HSTS_SECONDS`
+- `DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS`
+- `DJANGO_SECURE_HSTS_PRELOAD`
+- `DJANGO_USE_X_FORWARDED_HOST`
+- `DJANGO_SECURE_PROXY_SSL_HEADER`
 
-- AI asks intro questions first, then technical questions.
-- Follow‑ups adapt to your last response (if `OPENAI_API_KEY` is set).
-- Metrics and feedback update after each answer.
-- End‑of‑interview summary highlights strengths and improvements.
+### AI / Git Analysis
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_API_BASE`
+- `GITHUB_TOKEN`
+- `AI_REPO_CACHE_ENABLED`
+- `AI_REPO_CACHE_CHARS`
+- `AI_REPO_CHUNK_CHARS`
+- `AI_REPO_MAX_FILES`
+- `AI_REPO_PREVIEW_CHARS`
+
+### Frontend
+
+- `VITE_API_BASE_URL`
+
+## Main API Endpoints
+
+- `POST /api/accounts/signup/`
+- `POST /api/accounts/login/`
+- `GET /api/accounts/profile/`
+- `PATCH /api/accounts/profile/`
+- `GET /api/skills/dashboard/`
+- `GET /api/skills/code-analysis/`
+- `POST /api/skills/code-analysis/`
+- `GET /api/skills/code-analysis/<report_id>/file/?path=...`
+- `GET /api/skills/ai-interview/`
+- `POST /api/skills/ai-interview/action/`
+- `GET /api/skills/skill-passport/pdf/`
 
 ## Deployment
 
-Deploy frontend with any static host (Vercel, Netlify, etc.) and backend with a Django‑friendly host (Render, Railway, EC2, etc.). Configure environment variables on the backend host.
+### 1. Build frontend
 
-## License
+```sh
+npm install
+npm run build
+```
 
-Add your license here.
+### 2. Install backend dependencies
+
+```sh
+pip install -r requirements.txt
+```
+
+### 3. Configure environment
+
+Minimum production variables:
+
+```sh
+DJANGO_DEBUG=false
+DJANGO_SECRET_KEY=replace-with-a-long-random-secret
+DJANGO_ALLOWED_HOSTS=your-domain.com,www.your-domain.com
+DJANGO_CORS_ALLOWED_ORIGINS=https://your-frontend-domain.com
+DJANGO_CSRF_TRUSTED_ORIGINS=https://your-domain.com,https://www.your-domain.com
+DATABASE_URL=postgresql://user:password@host:5432/dbname
+```
+
+Optional but recommended:
+
+```sh
+OPENAI_API_KEY=...
+GITHUB_TOKEN=...
+DJANGO_SECURE_SSL_REDIRECT=true
+DJANGO_SESSION_COOKIE_SECURE=true
+DJANGO_CSRF_COOKIE_SECURE=true
+DJANGO_SECURE_HSTS_SECONDS=31536000
+```
+
+### 4. Prepare database and static files
+
+```sh
+python manage.py migrate
+python manage.py collectstatic --noinput
+```
+
+### 5. Run the app
+
+```sh
+gunicorn skillsence.wsgi:application --bind 0.0.0.0:8000
+```
+
+Or use the included `Procfile` on supported platforms.
+
+## Notes
+
+- Without `OPENAI_API_KEY`, repository analysis still runs using heuristics, but AI coaching sections stay empty.
+- Runtime artifacts such as `db.sqlite3`, `media/`, and `__pycache__/` are intentionally ignored in Git.

@@ -29,6 +29,7 @@ urlpatterns = [
     path('university-dashboard/interventions/<int:student_id>/', views.university_intervention_view, name='university-intervention'),
     path('university-dashboard/drives/', views.university_placement_drives_view, name='university-placement-drives'),
     path('code-analysis/', views.code_analysis_view, name='skills-code-analysis'),
+    path('code-analysis/<int:report_id>/file/', views.code_analysis_file_view, name='skills-code-analysis-file'),
     path('media/', views.media_view, name='skills-media'),
     path('progress/', views.progress_view, name='skills-progress'),
     path('roadmap/', views.roadmap_view, name='skills-roadmap'),

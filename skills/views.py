@@ -628,7 +628,7 @@ def _build_recommendations(user):
                 "description": "Solve 10 medium LeetCode problems and push 2 GitHub updates.",
                 "action_type": "complete_assessment",
                 "priority": "high",
-                "href": "/dashboard/code-analysis",
+            "href": "/dashboard/code",
                 "created_at": "",
             })
         if placement_parts.get("communication_weighted", 0) < 12:
@@ -661,7 +661,7 @@ def _build_recommendations(user):
                 "description": "Target 5-10 more medium problems to boost coding score.",
                 "action_type": "complete_assessment",
                 "priority": "high",
-                "href": "/dashboard/code-analysis",
+            "href": "/dashboard/code",
                 "created_at": "",
             })
     if communication_score and communication_score < 60:
@@ -764,7 +764,7 @@ def _fetch_repo_languages(languages_url, headers):
 
 
 def _fetch_repo_commits(owner, repo, headers):
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=5"
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=20"
     try:
         data = _http_json("GET", url, headers=headers)
     except Exception:
@@ -875,31 +875,82 @@ def _analyze_repo(owner, repo):
         "created_at": timezone.now().isoformat(),
     }
 
-def _openai_chat_json(system_content, user_content, max_tokens=700):
+def _llm_headers(api_key):
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": "skillsence-ai",
+    }
+
+
+def _llm_chat_completion(payload, timeout=20):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return None
+    url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1/chat/completions")
+    try:
+        data = _http_json("POST", url, payload=payload, headers=_llm_headers(api_key), timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            body = ""
+        return {"error": {"status": exc.code, "body": body}}
+    except Exception:
+        return None
+    return data
+
+
+def _llm_message_content(data):
+    try:
+        return (((data or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
+    except Exception:
+        return ""
+
+
+def _openai_chat_json(system_content, user_content, max_tokens=700):
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": user_content},
+    ]
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ],
+        "messages": messages,
         "temperature": 0.2,
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
+    data = _llm_chat_completion(payload, timeout=20)
+    content = _llm_message_content(data)
+    parsed = _safe_json_loads(content)
+    if parsed is not None:
+        return parsed
+
+    fallback_payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    f"{system_content}\n"
+                    "Return raw JSON only. Do not use markdown, code fences, or extra narration."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{user_content}\n"
+                    "Return valid JSON only."
+                ),
+            },
+        ],
+        "temperature": 0.1,
+        "max_tokens": max_tokens,
     }
-    url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1/chat/completions")
+    data = _llm_chat_completion(fallback_payload, timeout=20)
     try:
-        data = _http_json("POST", url, payload=payload, headers=headers, timeout=20)
-    except Exception:
-        return None
-    try:
-        content = (((data or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        content = _llm_message_content(data)
         return _safe_json_loads(content)
     except Exception:
         return None
@@ -945,6 +996,634 @@ def _fetch_blob_text(owner, repo, sha, headers):
         return decoded.decode("utf-8", errors="ignore")
     except Exception:
         return None
+
+
+def _repo_analysis_max_files():
+    value = _safe_int(os.environ.get("AI_REPO_MAX_FILES"), default=14)
+    return max(4, min(24, value))
+
+
+def _repo_preview_chars():
+    value = _safe_int(os.environ.get("AI_REPO_PREVIEW_CHARS"), default=4000)
+    return max(500, min(12000, value))
+
+
+def _should_skip_repo_path(path):
+    lowered = (path or "").lower()
+    if not lowered:
+        return True
+    blocked_segments = (
+        "node_modules",
+        "dist",
+        "build",
+        "coverage",
+        ".next",
+        ".nuxt",
+        ".venv",
+        "venv",
+        "__pycache__",
+        "vendor",
+        "staticfiles",
+    )
+    if any(f"/{segment}/" in f"/{lowered}/" for segment in blocked_segments):
+        return True
+    blocked_files = (
+        "package-lock.json",
+        "bun.lockb",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        ".DS_Store".lower(),
+    )
+    if any(lowered.endswith(name) for name in blocked_files):
+        return True
+    blocked_suffixes = (".min.js", ".min.css", ".map")
+    return lowered.endswith(blocked_suffixes)
+
+
+def _repo_file_role(path):
+    lowered = (path or "").lower()
+    name = os.path.basename(lowered)
+    if lowered.startswith(".github/workflows/"):
+        return "ci"
+    if name in {"readme", "readme.md", "readme.rst", "license", "license.md", "contributing.md"}:
+        return "documentation"
+    if name in {"dockerfile", "docker-compose.yml", "docker-compose.yaml", "requirements.txt", "package.json", "tsconfig.json", "pyproject.toml"}:
+        return "configuration"
+    if any(part in lowered for part in ("/test/", "/tests/", "__tests__")) or name.startswith("test_") or name.endswith((".spec.ts", ".spec.tsx", ".test.ts", ".test.tsx", "_test.py")):
+        return "test"
+    if name.endswith((".md", ".rst")):
+        return "documentation"
+    if name.endswith((".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env", ".env.example")):
+        return "configuration"
+    if lowered.startswith("scripts/") or "/scripts/" in lowered:
+        return "tooling"
+    return "source"
+
+
+def _select_repo_files_for_review(files):
+    role_rank = {
+        "source": 0,
+        "test": 1,
+        "configuration": 2,
+        "ci": 3,
+        "tooling": 4,
+        "documentation": 5,
+    }
+    selected = []
+    for item in files:
+        path = item.get("path") or ""
+        if not path or _should_skip_repo_path(path) or not _is_text_path(path):
+            continue
+        size = _safe_int(item.get("size"), default=0)
+        if size > 250000:
+            continue
+        role = _repo_file_role(path)
+        selected.append({
+            "path": path,
+            "sha": item.get("sha"),
+            "size": size,
+            "role": role,
+        })
+    selected.sort(
+        key=lambda item: (
+            role_rank.get(item["role"], 99),
+            -min(item["size"], 50000),
+            item["path"].count("/"),
+            item["path"],
+        )
+    )
+    return selected[:_repo_analysis_max_files()]
+
+
+def _repo_tree_overview(files):
+    paths = [item.get("path") or "" for item in files]
+    role_counts = {
+        "source_files": 0,
+        "test_files": 0,
+        "documentation_files": 0,
+        "configuration_files": 0,
+        "ci_files": 0,
+    }
+    for path in paths:
+        role = _repo_file_role(path)
+        if role == "source":
+            role_counts["source_files"] += 1
+        elif role == "test":
+            role_counts["test_files"] += 1
+        elif role == "documentation":
+            role_counts["documentation_files"] += 1
+        elif role == "configuration":
+            role_counts["configuration_files"] += 1
+        elif role == "ci":
+            role_counts["ci_files"] += 1
+    role_counts["total_files"] = len(paths)
+    role_counts["has_readme"] = any(os.path.basename(path.lower()).startswith("readme") for path in paths)
+    role_counts["has_license"] = any(os.path.basename(path.lower()).startswith("license") for path in paths)
+    role_counts["has_ci"] = any(path.lower().startswith(".github/workflows/") for path in paths)
+    role_counts["has_docker"] = any(os.path.basename(path.lower()) in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for path in paths)
+    return role_counts
+
+
+def _infer_repo_architecture(files, readme_text, languages):
+    paths = {item.get("path") or "" for item in files}
+    lowered_paths = {path.lower() for path in paths}
+    languages_lower = {str(language).lower() for language in languages}
+    tags = []
+    if "manage.py" in lowered_paths or any(path.endswith("/settings.py") for path in lowered_paths):
+        tags.append("Django backend")
+    if "package.json" in lowered_paths and any(path.endswith((".tsx", ".jsx")) for path in lowered_paths):
+        tags.append("React frontend")
+    if any(path.endswith((".ts", ".tsx")) for path in lowered_paths) or "typescript" in languages_lower:
+        tags.append("TypeScript")
+    if any(path.endswith((".py", ".pyi")) for path in lowered_paths) or "python" in languages_lower:
+        tags.append("Python")
+    if any(path.startswith(".github/workflows/") for path in lowered_paths):
+        tags.append("GitHub Actions CI")
+    if any(path.endswith((".spec.ts", ".test.ts", ".test.tsx", "_test.py")) or "/tests/" in path for path in lowered_paths):
+        tags.append("Automated tests")
+    if any(os.path.basename(path) in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"} for path in lowered_paths):
+        tags.append("Containerized")
+    if any(path.endswith("tailwind.config.ts") or path.endswith("tailwind.config.js") for path in lowered_paths):
+        tags.append("Tailwind UI")
+    readme_lower = (readme_text or "").lower()
+    if "rest api" in readme_lower or "api" in readme_lower:
+        tags.append("API service")
+    deduped = []
+    for tag in tags:
+        if tag not in deduped:
+            deduped.append(tag)
+    return deduped[:8]
+
+
+def _commit_category(message):
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return "unknown"
+    prefixes = {
+        "feat": "feature",
+        "fix": "fix",
+        "docs": "docs",
+        "refactor": "refactor",
+        "test": "test",
+        "chore": "chore",
+    }
+    for prefix, label in prefixes.items():
+        if lowered.startswith(prefix):
+            return label
+    if "fix" in lowered:
+        return "fix"
+    if "test" in lowered:
+        return "test"
+    if "doc" in lowered or "readme" in lowered:
+        return "docs"
+    return "general"
+
+
+def _commit_activity_payload(commits):
+    categories = {
+        "feature": 0,
+        "fix": 0,
+        "docs": 0,
+        "refactor": 0,
+        "test": 0,
+        "chore": 0,
+        "general": 0,
+        "unknown": 0,
+    }
+    unique_authors = set()
+    commit_messages = []
+    meaningful_messages = 0
+    for commit in commits:
+        message = ((commit.get("commit") or {}).get("message") or "").strip()
+        commit_messages.append(message)
+        categories[_commit_category(message)] += 1
+        if len(message.split()) >= 3 and message.lower() not in {"update", "changes", "fix", "wip"}:
+            meaningful_messages += 1
+        author = (commit.get("author") or {}).get("login") or ((commit.get("commit") or {}).get("author") or {}).get("name")
+        if author:
+            unique_authors.add(author)
+    sample_size = len(commit_messages)
+    quality_ratio = meaningful_messages / sample_size if sample_size else 0
+    if quality_ratio >= 0.7:
+        message_quality = "strong"
+    elif quality_ratio >= 0.4:
+        message_quality = "mixed"
+    else:
+        message_quality = "weak"
+    last_commit_at = None
+    if commits:
+        last_commit_at = (((commits[0].get("commit") or {}).get("committer") or {}).get("date"))
+    return {
+        "sample_size": sample_size,
+        "unique_authors": len(unique_authors),
+        "message_quality": message_quality,
+        "last_commit_at": last_commit_at,
+        "categories": categories,
+        "recent_messages": [message for message in commit_messages[:5] if message],
+    }
+
+
+def _count_secret_hits(content):
+    patterns = [
+        r"-----BEGIN [A-Z ]+PRIVATE KEY-----",
+        r"api[_-]?key\s*[:=]\s*['\"][^'\"]+['\"]",
+        r"secret[_-]?key\s*[:=]\s*['\"][^'\"]+['\"]",
+        r"password\s*[:=]\s*['\"][^'\"]+['\"]",
+        r"token\s*[:=]\s*['\"][^'\"]+['\"]",
+    ]
+    return sum(len(re.findall(pattern, content, flags=re.IGNORECASE)) for pattern in patterns)
+
+
+def _file_review_summary(role, line_count, strength_count, risk_count):
+    descriptor = {
+        "source": "Application source",
+        "test": "Test coverage",
+        "configuration": "Configuration",
+        "ci": "CI automation",
+        "tooling": "Tooling",
+        "documentation": "Documentation",
+    }.get(role, "Repository file")
+    return (
+        f"{descriptor} file with {line_count} lines, "
+        f"{strength_count} positive signal{'s' if strength_count != 1 else ''}, "
+        f"and {risk_count} review risk{'s' if risk_count != 1 else ''}."
+    )
+
+
+def _heuristic_file_review(path, content):
+    role = _repo_file_role(path)
+    lines = content.splitlines()
+    line_count = len(lines)
+    non_empty = [line for line in lines if line.strip()]
+    comment_lines = sum(
+        1
+        for line in non_empty
+        if line.strip().startswith(("#", "//", "/*", "*", "<!--"))
+    )
+    comment_ratio = (comment_lines / len(non_empty)) if non_empty else 0
+    function_count = len(re.findall(r"^\s*(async\s+def|def|function|const\s+\w+\s*=\s*\(|export\s+function|public\s+\w+\s*\()", content, flags=re.MULTILINE))
+    class_count = len(re.findall(r"^\s*class\s+\w+", content, flags=re.MULTILINE))
+    test_asserts = len(re.findall(r"\b(assert|expect\(|self\.assert|pytest)\b", content))
+    todo_count = len(re.findall(r"\b(TODO|FIXME|HACK)\b", content, flags=re.IGNORECASE))
+    long_lines = sum(1 for line in lines if len(line) > 120)
+    secret_hits = _count_secret_hits(content)
+    debug_hits = len(re.findall(r"\b(console\.log|print\(|debugger\b)\b", content))
+    bare_excepts = len(re.findall(r"^\s*except\s*:\s*$", content, flags=re.MULTILINE))
+    eval_hits = len(re.findall(r"\b(eval|exec)\s*\(", content))
+    shell_true_hits = len(re.findall(r"shell\s*=\s*True", content))
+    typed_file = path.lower().endswith((".ts", ".tsx", ".pyi"))
+    documentation_signal = '"""' in content or "/*" in content or comment_ratio >= 0.08
+
+    strengths = []
+    if typed_file:
+        strengths.append("Uses typed source code.")
+    if documentation_signal:
+        strengths.append("Includes developer-facing documentation or comments.")
+    if test_asserts:
+        strengths.append("Contains executable assertions or test expectations.")
+    if function_count and line_count <= 260:
+        strengths.append("Implementation is reasonably segmented into functions.")
+    if class_count:
+        strengths.append("Encapsulates logic into class-based structure.")
+
+    risks = []
+    if secret_hits:
+        risks.append("Possible hard-coded secret or credential pattern detected.")
+    if bare_excepts:
+        risks.append("Bare exception handler can hide runtime failures.")
+    if eval_hits or shell_true_hits:
+        risks.append("Dynamic execution patterns need security review.")
+    if debug_hits >= 2:
+        risks.append("Debug statements are still committed.")
+    if todo_count >= 2:
+        risks.append("Outstanding TODO/FIXME markers suggest unfinished work.")
+    if long_lines >= 12:
+        risks.append("Several long lines reduce readability and reviewability.")
+    if line_count > 500:
+        risks.append("Large file likely needs decomposition.")
+
+    score = 74
+    score += 6 if typed_file else 0
+    score += 6 if documentation_signal else 0
+    score += 5 if test_asserts else 0
+    score += 4 if function_count and line_count <= 260 else 0
+    score -= min(secret_hits * 22, 35)
+    score -= min(bare_excepts * 10, 20)
+    score -= min((eval_hits + shell_true_hits) * 12, 24)
+    score -= min(debug_hits * 3, 12)
+    score -= min(todo_count * 2, 10)
+    score -= min(max(long_lines - 3, 0), 12)
+    if line_count > 350:
+        score -= 8
+    if line_count > 700:
+        score -= 10
+    score = max(0, min(100, score))
+
+    if secret_hits or score < 45:
+        risk_level = "high"
+    elif score < 70 or risks:
+        risk_level = "medium"
+    else:
+        risk_level = "low"
+
+    return {
+        "path": path,
+        "role": role,
+        "score": score,
+        "risk_level": risk_level,
+        "lines": line_count,
+        "functions": function_count,
+        "classes": class_count,
+        "comment_ratio": round(comment_ratio, 2),
+        "issues": {
+            "todo_count": todo_count,
+            "long_lines": long_lines,
+            "secret_hits": secret_hits,
+            "debug_hits": debug_hits,
+            "bare_excepts": bare_excepts,
+            "dynamic_exec_hits": eval_hits + shell_true_hits,
+        },
+        "strengths": strengths[:4],
+        "risks": risks[:4],
+        "summary": _file_review_summary(role, line_count, len(strengths), len(risks)),
+    }
+
+
+def _normalize_ai_string_list(value, limit=4):
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for item in value:
+        normalized = str(item or "").strip()
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def _openai_repo_review(context):
+    result = _openai_chat_json(
+        (
+            "You are a senior software engineering reviewer. Review repository evidence and "
+            "return ONLY JSON with keys: summary (string), strengths (array), concerns (array), "
+            "next_steps (array). Keep every point grounded in the provided signals."
+        ),
+        json.dumps(context, ensure_ascii=False),
+        max_tokens=500,
+    )
+    if not isinstance(result, dict):
+        return None
+    summary = str(result.get("summary") or "").strip()
+    return {
+        "summary": summary[:400],
+        "strengths": _normalize_ai_string_list(result.get("strengths")),
+        "concerns": _normalize_ai_string_list(result.get("concerns")),
+        "next_steps": _normalize_ai_string_list(result.get("next_steps")),
+    }
+
+
+def _build_repo_recommendations(tree_overview, commit_activity, file_reviews):
+    recommendations = []
+    if not tree_overview.get("test_files"):
+        recommendations.append("Add automated tests around the main source paths before the next feature cycle.")
+    if not tree_overview.get("documentation_files"):
+        recommendations.append("Add a README section that explains setup, architecture, and deployment.")
+    high_risk_files = [item for item in file_reviews if item.get("risk_level") == "high"]
+    if high_risk_files:
+        recommendations.append("Resolve the high-risk file findings first, especially secrets, dynamic execution, and oversized files.")
+    if commit_activity.get("message_quality") == "weak":
+        recommendations.append("Use clearer commit messages so reviewers can trace feature, fix, and refactor intent.")
+    if len(recommendations) < 3:
+        recommendations.append("Break large source files into smaller modules with tighter responsibilities.")
+    return recommendations[:4]
+
+
+def _build_repo_strengths(tree_overview, architecture_tags, file_reviews):
+    strengths = []
+    if tree_overview.get("has_readme"):
+        strengths.append("Repository has baseline onboarding documentation.")
+    if tree_overview.get("test_files"):
+        strengths.append("Repository includes automated test files.")
+    if architecture_tags:
+        strengths.append(f"Project structure clearly signals {', '.join(architecture_tags[:3])}.")
+    strong_files = [item for item in file_reviews if item.get("score", 0) >= 80]
+    if strong_files:
+        strengths.append(f"{len(strong_files)} reviewed files scored in the strong maintainability range.")
+    return strengths[:4]
+
+
+def _build_repo_risks(tree_overview, commit_activity, file_reviews):
+    risks = []
+    if not tree_overview.get("has_ci"):
+        risks.append("No CI workflow was detected, so regression checks may depend on manual runs.")
+    if commit_activity.get("sample_size", 0) <= 2:
+        risks.append("Very little recent commit history was available for activity analysis.")
+    medium_or_high = [item for item in file_reviews if item.get("risk_level") in {"medium", "high"}]
+    if medium_or_high:
+        risks.append(f"{len(medium_or_high)} reviewed files still carry medium or high review risk.")
+    return risks[:4]
+
+
+def _analyze_repository_work(owner, repo, user=None):
+    headers = _github_headers()
+    repo_api_url = f"https://api.github.com/repos/{owner}/{repo}"
+    try:
+        repo_data = _http_json("GET", repo_api_url, headers=headers)
+    except Exception:
+        return {"error": "Unable to fetch repository data."}
+    if not isinstance(repo_data, dict):
+        return {"error": "Unable to fetch repository data."}
+
+    default_branch = repo_data.get("default_branch") or "main"
+    try:
+        tree = _fetch_repo_tree(owner, repo, headers, default_branch)
+    except Exception:
+        return {"error": "Unable to fetch repository tree."}
+    if not isinstance(tree, dict) or not isinstance(tree.get("tree"), list):
+        return {"error": "Unable to fetch repository tree."}
+
+    files = [node for node in tree.get("tree", []) if node.get("type") == "blob"]
+    selected_files = _select_repo_files_for_review(files)
+    if not selected_files:
+        return {"error": "No analyzable text files found for this repository."}
+
+    languages = _fetch_repo_languages(repo_data.get("languages_url"), headers)
+    commits = _fetch_repo_commits(owner, repo, headers)
+    readme_text = _fetch_repo_readme(owner, repo, headers)
+    tree_overview = _repo_tree_overview(files)
+    architecture_tags = _infer_repo_architecture(files, readme_text, languages)
+    commit_activity = _commit_activity_payload(commits)
+
+    total_lines = 0
+    file_reviews = []
+    total_score = 0
+    total_files = 0
+    top_ai_candidates = []
+    repo_html_url = repo_data.get("html_url") or f"https://github.com/{owner}/{repo}"
+
+    for item in selected_files:
+        path = item.get("path")
+        sha = item.get("sha")
+        if not path or not sha:
+            continue
+        content = _fetch_blob_text(owner, repo, sha, headers)
+        if content is None:
+            continue
+        lines = content.count("\n") + 1 if content else 0
+        total_lines += lines
+        _store_repo_file_snapshot(
+            user=user,
+            repo_url=repo_html_url,
+            path=path,
+            sha=sha,
+            content=content,
+            size=item.get("size", 0),
+            lines=lines,
+        )
+        review = _heuristic_file_review(path, content)
+        review["size"] = item.get("size", 0)
+        file_reviews.append(review)
+        total_score += review["score"]
+        total_files += 1
+        if review["role"] == "source":
+            top_ai_candidates.append((review["risk_level"], -review["score"], -review["lines"], path, content))
+
+    if not file_reviews:
+        return {"error": "Unable to load repository source files for analysis."}
+
+    top_ai_candidates.sort(key=lambda item: ({"high": 0, "medium": 1, "low": 2}.get(item[0], 9), item[1], item[2], item[3]))
+    if os.environ.get("OPENAI_API_KEY"):
+        for risk_level, _neg_score, _neg_lines, path, content in top_ai_candidates[:3]:
+            ai_result = _openai_score_code_chunk(path, content[:6000], 0, 1)
+            if not ai_result:
+                continue
+            for review in file_reviews:
+                if review["path"] == path:
+                    review["ai_confidence"] = ai_result["score"]
+                    review["ai_generated"] = ai_result["label"]
+                    review["ai_rationale"] = ai_result["rationale"]
+                    if risk_level == "high" and ai_result["score"] >= 65:
+                        review["risks"] = [*review["risks"], "AI review also flagged strong generated-code likelihood."][:4]
+                    break
+
+    maintainability_score = int(round(total_score / max(total_files, 1)))
+    testing_score = min(100, tree_overview["test_files"] * 18 + (20 if tree_overview["test_files"] else 0))
+    documentation_score = min(100, tree_overview["documentation_files"] * 18 + (25 if tree_overview["has_readme"] else 0))
+    security_penalty = sum(item["issues"].get("secret_hits", 0) * 25 for item in file_reviews)
+    security_penalty += sum(item["issues"].get("dynamic_exec_hits", 0) * 10 for item in file_reviews)
+    security_penalty += sum(item["issues"].get("bare_excepts", 0) * 6 for item in file_reviews)
+    security_penalty += sum(item["issues"].get("debug_hits", 0) * 2 for item in file_reviews)
+    security_score = max(20, 100 - security_penalty)
+    architecture_score = min(100, 40 + len(architecture_tags) * 10 + (15 if tree_overview["has_ci"] else 0) + (15 if tree_overview["has_docker"] else 0))
+    originality_score = 82
+    if repo_data.get("fork") or repo_data.get("is_template"):
+        originality_score -= 30
+    if repo_data.get("stargazers_count", 0) > 5:
+        originality_score += 4
+    if commit_activity["sample_size"] >= 8:
+        originality_score += 4
+    originality_score = max(25, min(100, originality_score))
+    commit_score = 45
+    commit_score += min(commit_activity["sample_size"] * 3, 25)
+    commit_score += 10 if commit_activity["message_quality"] == "strong" else 4 if commit_activity["message_quality"] == "mixed" else 0
+    commit_score += min(commit_activity["unique_authors"] * 4, 12)
+    commit_score = min(100, commit_score)
+    engineering_score = int(round(
+        maintainability_score * 0.34
+        + security_score * 0.18
+        + testing_score * 0.14
+        + documentation_score * 0.12
+        + architecture_score * 0.10
+        + commit_score * 0.12
+    ))
+
+    repo_ai_confidence = max(
+        [review.get("ai_confidence", 0) for review in file_reviews if isinstance(review.get("ai_confidence"), int)] or [0]
+    )
+    if repo_ai_confidence >= 70:
+        ai_generated = "likely"
+    elif repo_ai_confidence >= 40:
+        ai_generated = "possible"
+    else:
+        ai_generated = "unlikely"
+
+    strengths = _build_repo_strengths(tree_overview, architecture_tags, file_reviews)
+    risks = _build_repo_risks(tree_overview, commit_activity, file_reviews)
+    recommendations = _build_repo_recommendations(tree_overview, commit_activity, file_reviews)
+
+    ai_review = None
+    if os.environ.get("OPENAI_API_KEY"):
+        ai_review = _openai_repo_review({
+            "repo_name": repo_data.get("name"),
+            "description": repo_data.get("description") or "",
+            "languages": languages,
+            "architecture": architecture_tags,
+            "tree_overview": tree_overview,
+            "commit_activity": commit_activity,
+            "top_file_reviews": [
+                {
+                    "path": item["path"],
+                    "score": item["score"],
+                    "risk_level": item["risk_level"],
+                    "strengths": item["strengths"],
+                    "risks": item["risks"],
+                }
+                for item in file_reviews[:6]
+            ],
+            "strengths": strengths,
+            "risks": risks,
+            "recommendations": recommendations,
+        })
+
+    summary = (
+        (ai_review or {}).get("summary")
+        or f"{repo_data.get('name') or repo} scored {engineering_score}/100. "
+           f"Strongest signals: {', '.join(strengths[:2]) or 'basic project structure'}. "
+           f"Main risks: {', '.join(risks[:2]) or 'follow-up engineering review recommended'}."
+    )
+
+    file_reviews = sorted(
+        file_reviews,
+        key=lambda item: (
+            {"high": 0, "medium": 1, "low": 2}.get(item["risk_level"], 9),
+            item["score"],
+            -item["lines"],
+            item["path"],
+        )
+    )[:12]
+
+    return {
+        "repo_name": repo_data.get("name") or repo,
+        "repo_url": repo_html_url,
+        "description": repo_data.get("description") or "",
+        "summary": summary[:500],
+        "engineering_score": engineering_score,
+        "maintainability_score": maintainability_score,
+        "security_score": security_score,
+        "testing_score": testing_score,
+        "documentation_score": documentation_score,
+        "architecture_score": architecture_score,
+        "originality_score": originality_score,
+        "ai_generated": ai_generated,
+        "ai_confidence": repo_ai_confidence,
+        "languages": languages,
+        "files_analyzed": len(file_reviews),
+        "lines_analyzed": total_lines,
+        "tree_overview": tree_overview,
+        "commit_activity": commit_activity,
+        "architecture": architecture_tags,
+        "strengths": strengths,
+        "risks": risks,
+        "recommendations": recommendations,
+        "file_reviews": file_reviews,
+        "ai_review": ai_review,
+        "stars": repo_data.get("stargazers_count", 0),
+        "forks": repo_data.get("forks_count", 0),
+        "open_issues": repo_data.get("open_issues_count", 0),
+        "default_branch": default_branch,
+        "pushed_at": repo_data.get("pushed_at"),
+    }
 
 
 def _openai_score_code_chunk(path, chunk, chunk_index, total_chunks):
@@ -1179,50 +1858,30 @@ def _intro_questions(user):
     ]
 
 def _generate_ai_questions(user, total=10):
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    if not os.environ.get("OPENAI_API_KEY"):
         return None
 
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     skills = [skill.name for skill in user.skills.all() if skill.name]
-    prompt = {
-        "role": "user",
-        "content": (
+    parsed = _openai_chat_json(
+        "You are an interview question generator. Return valid JSON only.",
+        (
             f"Generate {total} technical interview questions tailored to this user skill list: "
             f"{', '.join(skills) if skills else 'general software engineering'}. "
-            f"Return ONLY a JSON array of {total} objects with keys: question, difficulty, tags. "
-            "difficulty must be one of: easy, medium, hard. "
-            "Keep questions short."
+            f"Return ONLY a JSON object with a key named questions. "
+            f"questions must be an array of {total} objects with keys: question, difficulty, tags. "
+            "difficulty must be one of: easy, medium, hard. Keep questions short."
         ),
-    }
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are an interview question generator. Return valid JSON only."},
-            prompt,
-        ],
-        "temperature": 0.6,
-        "max_tokens": 600,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-    }
-    url = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1/chat/completions")
-    try:
-        data = _http_json("POST", url, payload=payload, headers=headers, timeout=15)
-    except Exception:
+        max_tokens=700,
+    )
+    if not isinstance(parsed, dict):
         return None
-    try:
-        content = (((data or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
-        parsed = _safe_json_loads(content)
-    except Exception:
-        parsed = None
 
-    if not isinstance(parsed, list):
+    question_items = parsed.get("questions")
+    if not isinstance(question_items, list):
         return None
 
     cleaned = []
-    for item in parsed:
+    for item in question_items:
         if not isinstance(item, dict):
             continue
         question = (item.get("question") or "").strip()
@@ -3229,51 +3888,46 @@ def code_analysis_view(request):
             owner = _extract_github_username(request.user.github_link)
         if not owner or not repo_name:
             return Response({'error': 'Valid GitHub repository URL is required'}, status=400)
-        analysis = None
-        ai_error = None
-        if os.environ.get("OPENAI_API_KEY"):
-            try:
-                analysis = _analyze_repo_ai_generated(owner, repo_name, user=request.user)
-            except Exception:
-                analysis = None
-            if isinstance(analysis, dict) and analysis.get("error"):
-                ai_error = analysis.get("error")
-                analysis = None
-        else:
-            ai_error = "OPENAI_API_KEY not configured."
-
-        if not analysis:
-            return Response({'error': ai_error or 'Unable to analyze repository'}, status=400)
-
-        metrics = {
-            "ai_generated": analysis.get("ai_generated"),
-            "ai_confidence": analysis.get("ai_confidence", 0),
-            "languages": analysis.get("languages", []),
-            "files_analyzed": analysis.get("files_analyzed", 0),
-            "lines_analyzed": analysis.get("lines_analyzed", 0),
-        }
-        top_files = analysis.get("top_ai_files") or []
-        if isinstance(top_files, list):
-            formatted = []
-            for item in top_files:
-                if isinstance(item, dict):
-                    path = item.get("path") or "unknown"
-                    score = item.get("score", 0)
-                    label = item.get("label")
-                    suffix = f"{score}" if label is None else f"{score} ({label})"
-                    formatted.append(f"{path} - {suffix}")
-                else:
-                    formatted.append(str(item))
-            if formatted:
-                metrics["top_ai_files"] = formatted
+        try:
+            analysis = _analyze_repository_work(owner, repo_name, user=request.user)
+        except Exception:
+            analysis = {"error": "Unable to analyze repository right now."}
+        if not isinstance(analysis, dict) or analysis.get("error"):
+            return Response({'error': (analysis or {}).get("error") or 'Unable to analyze repository'}, status=400)
 
         report, _ = CodeAnalysisReport.objects.update_or_create(
             user=request.user,
             repo_url=analysis['repo_url'],
             defaults={
-                'summary': 'AI-generated likelihood analysis.',
-                'score': metrics["ai_confidence"],
-                'metrics': metrics,
+                'summary': analysis.get('summary') or 'Repository engineering analysis.',
+                'score': analysis.get("engineering_score", 0),
+                'metrics': {
+                    "engineering_score": analysis.get("engineering_score", 0),
+                    "maintainability_score": analysis.get("maintainability_score", 0),
+                    "security_score": analysis.get("security_score", 0),
+                    "testing_score": analysis.get("testing_score", 0),
+                    "documentation_score": analysis.get("documentation_score", 0),
+                    "architecture_score": analysis.get("architecture_score", 0),
+                    "originality_score": analysis.get("originality_score", 0),
+                    "ai_generated": analysis.get("ai_generated"),
+                    "ai_confidence": analysis.get("ai_confidence", 0),
+                    "languages": analysis.get("languages", []),
+                    "files_analyzed": analysis.get("files_analyzed", 0),
+                    "lines_analyzed": analysis.get("lines_analyzed", 0),
+                    "tree_overview": analysis.get("tree_overview", {}),
+                    "commit_activity": analysis.get("commit_activity", {}),
+                    "architecture": analysis.get("architecture", []),
+                    "strengths": analysis.get("strengths", []),
+                    "risks": analysis.get("risks", []),
+                    "recommendations": analysis.get("recommendations", []),
+                    "file_reviews": analysis.get("file_reviews", []),
+                    "ai_review": analysis.get("ai_review"),
+                    "stars": analysis.get("stars", 0),
+                    "forks": analysis.get("forks", 0),
+                    "open_issues": analysis.get("open_issues", 0),
+                    "default_branch": analysis.get("default_branch"),
+                    "pushed_at": analysis.get("pushed_at"),
+                },
                 'status': 'completed',
             },
         )
@@ -3302,6 +3956,37 @@ def code_analysis_view(request):
             'created_at': report.created_at.isoformat(),
         })
     return Response({'items': items})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def code_analysis_file_view(request, report_id):
+    report = CodeAnalysisReport.objects.filter(user=request.user, id=report_id).first()
+    if not report:
+        return Response({'error': 'Analysis report not found'}, status=404)
+    path = (request.query_params.get('path') or '').strip()
+    if not path:
+        return Response({'error': 'File path is required'}, status=400)
+    snapshot = RepoFileSnapshot.objects.filter(
+        user=request.user,
+        repo_url=report.repo_url,
+        path=path,
+    ).order_by('-created_at').first()
+    if not snapshot:
+        return Response({'error': 'File preview not found'}, status=404)
+    file_reviews = report.metrics.get("file_reviews", []) if isinstance(report.metrics, dict) else []
+    review = next((item for item in file_reviews if item.get("path") == path), None)
+    preview_chars = _repo_preview_chars()
+    preview = snapshot.content[:preview_chars]
+    return Response({
+        'path': snapshot.path,
+        'sha': snapshot.sha,
+        'size': snapshot.size,
+        'lines': snapshot.lines,
+        'preview': preview,
+        'truncated': len(snapshot.content or "") > preview_chars,
+        'review': review,
+    })
 
 
 
