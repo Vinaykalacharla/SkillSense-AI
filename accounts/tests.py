@@ -1,6 +1,8 @@
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIClient
+from unittest.mock import patch
 
 from skills.models import Document
 from .models import User
@@ -91,3 +93,36 @@ class SignupResumePersistenceTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["user"]["approval_status"], "approved")
+
+    @patch.dict(
+        "os.environ",
+        {
+            "DJANGO_SUPERUSER_EMAIL": "admin@example.com",
+            "DJANGO_SUPERUSER_USERNAME": "admin",
+            "DJANGO_SUPERUSER_PASSWORD": "StrongPass123!",
+            "BOOTSTRAP_RECRUITER_EMAIL": "recruiter@example.com",
+            "BOOTSTRAP_RECRUITER_USERNAME": "recruiter1",
+            "BOOTSTRAP_RECRUITER_PASSWORD": "RecruiterPass123!",
+            "BOOTSTRAP_RECRUITER_ORGANIZATION": "SkillSense Hiring",
+            "BOOTSTRAP_UNIVERSITY_EMAIL": "university@example.com",
+            "BOOTSTRAP_UNIVERSITY_USERNAME": "university1",
+            "BOOTSTRAP_UNIVERSITY_PASSWORD": "UniversityPass123!",
+            "BOOTSTRAP_UNIVERSITY_ORGANIZATION": "SkillSense University",
+        },
+        clear=False,
+    )
+    def test_bootstrap_initial_users_command_creates_accounts(self):
+        call_command("bootstrap_initial_users")
+
+        admin = User.objects.get(email="admin@example.com")
+        recruiter = User.objects.get(email="recruiter@example.com")
+        university = User.objects.get(email="university@example.com")
+
+        self.assertTrue(admin.is_superuser)
+        self.assertTrue(admin.is_staff)
+        self.assertEqual(recruiter.role, "recruiter")
+        self.assertEqual(recruiter.approval_status, "approved")
+        self.assertEqual(recruiter.organization_name, "SkillSense Hiring")
+        self.assertEqual(university.role, "university")
+        self.assertEqual(university.approval_status, "approved")
+        self.assertEqual(university.organization_name, "SkillSense University")
