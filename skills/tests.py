@@ -509,3 +509,84 @@ class RecruiterUniversityDashboardTests(TestCase):
         self.assertEqual(payload["path"], "accounts/views.py")
         self.assertIn("sample_view", payload["preview"])
         self.assertEqual(payload["review"]["risk_level"], "medium")
+
+    def test_ai_interview_start_returns_advanced_profile_payload(self):
+        self.client.force_authenticate(user=self.student_one)
+
+        response = self.client.post(
+            "/api/skills/ai-interview/action/",
+            {
+                "action": "start",
+                "target_role": "Backend Engineer",
+                "seniority": "new_grad",
+                "company_style": "product",
+                "interview_mode": "mixed",
+                "focus_areas": ["django", "api design", "system design"],
+                "question_count": 8,
+                "answer_time_sec": 110,
+                "max_followups": 2,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "active")
+        self.assertEqual(payload["session_profile"]["target_role"], "Backend Engineer")
+        self.assertEqual(payload["session_profile"]["answer_time_sec"], 110)
+        self.assertGreaterEqual(payload["total_questions"], 8)
+        self.assertTrue(payload["current_panelist"])
+
+        session = AIInterviewSession.objects.get(user=self.student_one, status="active")
+        self.assertEqual(session.session_profile["target_role"], "Backend Engineer")
+        self.assertIn("recommendation", session.summary)
+
+    def test_ai_interview_response_persists_analysis_and_summary(self):
+        self.client.force_authenticate(user=self.student_one)
+        self.client.post(
+            "/api/skills/ai-interview/action/",
+            {
+                "action": "start",
+                "target_role": "Backend Engineer",
+                "interview_mode": "technical",
+                "focus_areas": ["django", "performance", "security"],
+                "question_count": 8,
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/skills/ai-interview/action/",
+            {
+                "action": "respond",
+                "message": (
+                    "I built a Django API for student verification. First I profiled the slow endpoint, "
+                    "found an N+1 query issue, added select_related, introduced Redis caching, and reduced "
+                    "latency from 420ms to 110ms. I also added regression tests and monitored errors after release."
+                ),
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("summary", payload)
+        self.assertIn("competency_scores", payload["summary"])
+        self.assertIn("latest_analysis", payload)
+        self.assertIn("rubric", payload["latest_analysis"])
+
+        session = AIInterviewSession.objects.get(user=self.student_one, status="active")
+        self.assertEqual(len(session.answers), 1)
+        self.assertIn("analysis", session.answers[0])
+        self.assertIn("rubric", session.answers[0]["analysis"])
+        self.assertTrue(session.summary.get("recommendation"))
+
+        finish = self.client.post(
+            "/api/skills/ai-interview/action/",
+            {"action": "finish"},
+            format="json",
+        )
+        self.assertEqual(finish.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, "completed")
+        self.assertTrue(session.summary.get("recommendation"))

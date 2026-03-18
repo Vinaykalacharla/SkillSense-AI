@@ -174,6 +174,8 @@ class AIInterviewSession(models.Model):
     answers = models.JSONField(default=list)
     current_index = models.IntegerField(default=0)
     score = models.IntegerField(default=0)
+    session_profile = models.JSONField(default=dict)
+    summary = models.JSONField(default=dict)
     started_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)

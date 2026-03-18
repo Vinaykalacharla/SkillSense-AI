@@ -4,6 +4,7 @@ import { DashboardSidebar } from '@/components/dashboard/Sidebar';
 import {
   AlertCircle,
   Brain,
+  Briefcase,
   CheckCircle2,
   Camera,
   Clock3,
@@ -19,11 +20,15 @@ import {
   VolumeX,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
 import { buildApiUrl } from '@/lib/api';
 
 interface TranscriptItem {
   speaker: string;
   text: string;
+  panelist?: string;
+  competency?: string;
 }
 
 interface FeedbackItem {
@@ -42,7 +47,46 @@ interface InterviewState {
   current_index?: number;
   current_question?: string | null;
   current_difficulty?: string | null;
+  current_competency?: string | null;
+  current_panelist?: string | null;
+  current_focus?: string | null;
+  answer_time_sec?: number;
   score?: number;
+}
+
+interface SessionProfile {
+  target_role: string;
+  seniority: string;
+  company_style: string;
+  interview_mode: string;
+  focus_areas: string[];
+  candidate_skills?: string[];
+  question_count: number;
+  answer_time_sec: number;
+  max_followups: number;
+  headline?: string;
+}
+
+interface SummaryData {
+  strengths: string[];
+  improvements: string[];
+  red_flags: string[];
+  next_steps: string[];
+  readiness_score: number;
+  recommendation?: string;
+  competency_scores?: Record<string, number>;
+  highlights?: string[];
+}
+
+interface LatestAnalysis {
+  quality_score?: number;
+  coach_summary?: string;
+  weakest_dimension?: string;
+  strongest_dimension?: string;
+  rubric?: Record<string, number>;
+  red_flags?: string[];
+  strengths?: string[];
+  improvements?: string[];
 }
 
 interface InterviewHistoryItem {
@@ -55,6 +99,10 @@ interface InterviewHistoryItem {
   completed_at?: string | null;
   strengths: string[];
   improvements: string[];
+  target_role?: string;
+  interview_mode?: string;
+  readiness_score?: number;
+  recommendation?: string;
 }
 
 type SpeechRecognitionInstance = {
@@ -79,14 +127,12 @@ export default function AIInterview() {
   const streamRef = useRef<MediaStream | null>(null);
   const ttsEnabledRef = useRef(true);
   const autoEndedRef = useRef(false);
-  const autoStartedRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const finalTranscriptRef = useRef('');
   const lastTranscriptRef = useRef('');
   const silenceTimerRef = useRef<number | null>(null);
   const silenceMs = 2000;
   const timerRef = useRef<number | null>(null);
-  const answerTimeSec = 90;
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [feedback, setFeedback] = useState<FeedbackItem[]>([]);
   const [metrics, setMetrics] = useState<MetricItem[]>([]);
@@ -105,7 +151,21 @@ export default function AIInterview() {
   const [speechSupported, setSpeechSupported] = useState(true);
   const [focusWarnings, setFocusWarnings] = useState(0);
   const [focusMessage, setFocusMessage] = useState('');
-  const [secondsLeft, setSecondsLeft] = useState(answerTimeSec);
+  const [summary, setSummary] = useState<SummaryData | null>(null);
+  const [latestAnalysis, setLatestAnalysis] = useState<LatestAnalysis | null>(null);
+  const [sessionProfile, setSessionProfile] = useState<SessionProfile | null>(null);
+  const [setupForm, setSetupForm] = useState<SessionProfile>({
+    target_role: 'Software Engineer',
+    seniority: 'new_grad',
+    company_style: 'product',
+    interview_mode: 'mixed',
+    focus_areas: ['problem solving', 'communication', 'system design'],
+    question_count: 9,
+    answer_time_sec: 120,
+    max_followups: 3,
+  });
+  const [focusAreasInput, setFocusAreasInput] = useState('problem solving, communication, system design');
+  const [secondsLeft, setSecondsLeft] = useState(120);
   const maxWarnings = 2;
 
   ttsEnabledRef.current = ttsEnabled;
@@ -260,6 +320,10 @@ export default function AIInterview() {
       metrics?: MetricItem[];
       tips?: string[];
       history?: InterviewHistoryItem[];
+      session_profile?: SessionProfile;
+      summary?: SummaryData;
+      latest_analysis?: LatestAnalysis;
+      setup_defaults?: SessionProfile;
     },
   ) => {
     if (data?.status) {
@@ -270,11 +334,33 @@ export default function AIInterview() {
     setMetrics(Array.isArray(data?.metrics) ? data.metrics : []);
     setTips(Array.isArray(data?.tips) ? data.tips : []);
     setHistory(Array.isArray(data?.history) ? data.history : []);
+    if (data?.session_profile) {
+      setSessionProfile(data.session_profile);
+    }
+    if (data?.summary) {
+      setSummary(data.summary);
+    } else {
+      setSummary(null);
+    }
+    if (data?.latest_analysis) {
+      setLatestAnalysis(data.latest_analysis);
+    } else {
+      setLatestAnalysis(null);
+    }
+    const defaults = data?.setup_defaults || data?.session_profile;
+    if (defaults) {
+      setSetupForm(defaults);
+      setFocusAreasInput((defaults.focus_areas || []).join(', '));
+    }
     setInterviewState({
       total_questions: data?.total_questions,
       current_index: data?.current_index,
       current_question: data?.current_question,
       current_difficulty: data?.current_difficulty,
+      current_competency: data?.current_competency,
+      current_panelist: data?.current_panelist,
+      current_focus: data?.current_focus,
+      answer_time_sec: data?.answer_time_sec,
       score: data?.score,
     });
   };
@@ -302,16 +388,11 @@ export default function AIInterview() {
         setMetrics([]);
         setTips([]);
         setHistory([]);
+        setSummary(null);
+        setLatestAnalysis(null);
         setInterviewState({});
       });
   }, []);
-
-  useEffect(() => {
-    if (status === 'idle' && !autoStartedRef.current) {
-      autoStartedRef.current = true;
-      handleAction('start');
-    }
-  }, [status]);
 
   useEffect(() => {
     initSpeechRecognition();
@@ -338,6 +419,21 @@ export default function AIInterview() {
         body: JSON.stringify({
           action,
           message,
+          ...(action === 'start'
+            ? {
+                target_role: setupForm.target_role,
+                seniority: setupForm.seniority,
+                company_style: setupForm.company_style,
+                interview_mode: setupForm.interview_mode,
+                focus_areas: focusAreasInput
+                  .split(',')
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+                question_count: setupForm.question_count,
+                answer_time_sec: setupForm.answer_time_sec,
+                max_followups: setupForm.max_followups,
+              }
+            : {}),
         }),
       });
       const data = await res.json();
@@ -350,6 +446,13 @@ export default function AIInterview() {
     } finally {
       setSending(false);
     }
+  };
+
+  const updateSetupField = <K extends keyof SessionProfile>(field: K, value: SessionProfile[K]) => {
+    setSetupForm((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
   };
 
   const requestFullscreen = async () => {
@@ -376,7 +479,11 @@ export default function AIInterview() {
   const currentIndex = interviewState.current_index ?? 0;
   const currentQuestion = interviewState.current_question ?? '';
   const currentDifficulty = interviewState.current_difficulty ?? '';
+  const currentCompetency = interviewState.current_competency ?? '';
+  const currentPanelist = interviewState.current_panelist ?? '';
+  const currentFocus = interviewState.current_focus ?? '';
   const score = interviewState.score ?? 0;
+  const answerTimeSec = interviewState.answer_time_sec ?? sessionProfile?.answer_time_sec ?? setupForm.answer_time_sec;
 
   const progress = useMemo(() => {
     if (!totalQuestions) {
@@ -407,7 +514,7 @@ export default function AIInterview() {
       setFocusWarnings(0);
       setFocusMessage('');
     }
-  }, [status, listening]);
+  }, [status, listening, answerTimeSec]);
 
   useEffect(() => {
     if (status !== 'active') {
@@ -445,7 +552,7 @@ export default function AIInterview() {
     return () => {
       clearAnswerTimer();
     };
-  }, [currentIndex, status]);
+  }, [currentIndex, status, answerTimeSec]);
 
   useEffect(() => {
     const handleVisibility = () => {
@@ -561,15 +668,25 @@ export default function AIInterview() {
                     AI Interview Lab
                   </div>
                   <h1 className="mt-4 text-3xl font-semibold tracking-tight md:text-4xl">
-                    Run a crisp, signal-rich interview
+                    Run an adaptive, hiring-grade interview
                   </h1>
                   <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-                    Practice structured answers, track depth, and build confidence with feedback that
-                    updates after every response.
+                    Configure the role, difficulty, and panel style first. The session adapts question-by-question
+                    and scores communication, depth, ownership, tradeoffs, and evidence.
                   </p>
+                  {sessionProfile?.headline && (
+                    <p className="mt-3 text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                      {sessionProfile.headline} · {(sessionProfile.interview_mode || 'mixed').replace('_', ' ')} mode
+                    </p>
+                  )}
                   {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
+                  {summary?.recommendation && (
+                    <div className="rounded-full border border-primary/20 bg-primary/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.15em] text-primary">
+                      {summary.recommendation}
+                    </div>
+                  )}
                   <div
                     className={`flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.15em] ${statusStyles[status]}`}
                   >
@@ -594,6 +711,126 @@ export default function AIInterview() {
 
             <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
               <div className="space-y-6">
+                {status !== 'active' && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 24 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.5 }}
+                    className="rounded-3xl border border-border/60 bg-card/70 p-6"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Briefcase className="h-5 w-5 text-primary" />
+                          <h2 className="text-lg font-semibold">Interview setup</h2>
+                        </div>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          Tune the session before you start. The interviewer adapts difficulty, follow-ups, and scoring to this profile.
+                        </p>
+                      </div>
+                      <Button onClick={() => handleAction('start')} disabled={sending} className="rounded-full">
+                        {status === 'completed' ? 'Start new round' : 'Launch session'}
+                      </Button>
+                    </div>
+
+                    <div className="mt-5 grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                          Target role
+                        </label>
+                        <Input
+                          value={setupForm.target_role}
+                          onChange={(event) => updateSetupField('target_role', event.target.value)}
+                          placeholder="Backend Engineer"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                          Seniority
+                        </label>
+                        <select
+                          value={setupForm.seniority}
+                          onChange={(event) => updateSetupField('seniority', event.target.value)}
+                          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          <option value="intern">Intern</option>
+                          <option value="new_grad">New Grad</option>
+                          <option value="junior">Junior</option>
+                          <option value="mid">Mid</option>
+                          <option value="senior">Senior</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                          Panel style
+                        </label>
+                        <select
+                          value={setupForm.company_style}
+                          onChange={(event) => updateSetupField('company_style', event.target.value)}
+                          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          <option value="product">Product</option>
+                          <option value="startup">Startup</option>
+                          <option value="enterprise">Enterprise</option>
+                          <option value="consulting">Consulting</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                          Interview mode
+                        </label>
+                        <select
+                          value={setupForm.interview_mode}
+                          onChange={(event) => updateSetupField('interview_mode', event.target.value)}
+                          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        >
+                          <option value="mixed">Mixed</option>
+                          <option value="technical">Technical</option>
+                          <option value="behavioral">Behavioral</option>
+                          <option value="system_design">System design</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2 md:col-span-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                          Focus areas
+                        </label>
+                        <Input
+                          value={focusAreasInput}
+                          onChange={(event) => setFocusAreasInput(event.target.value)}
+                          placeholder="problem solving, communication, django"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Comma separated. These guide question selection and follow-up pressure.
+                        </p>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                          Question count
+                        </label>
+                        <Input
+                          type="number"
+                          min={8}
+                          max={12}
+                          value={setupForm.question_count}
+                          onChange={(event) => updateSetupField('question_count', Number(event.target.value))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                          Answer time (sec)
+                        </label>
+                        <Input
+                          type="number"
+                          min={90}
+                          max={180}
+                          value={setupForm.answer_time_sec}
+                          onChange={(event) => updateSetupField('answer_time_sec', Number(event.target.value))}
+                        />
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
                 {focusWarnings > 0 && (
                   <div className="rounded-2xl border border-amber-400/40 bg-amber-400/10 p-4 text-sm text-amber-500">
                     <div className="flex items-center gap-2 font-semibold">
@@ -621,9 +858,26 @@ export default function AIInterview() {
                         <h2 className="text-lg font-semibold">
                           {currentQuestion || 'Start a session to get your first question.'}
                         </h2>
-                        {currentDifficulty && (
-                          <p className="text-xs text-muted-foreground">
-                            Difficulty: {currentDifficulty.toUpperCase()}
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          {currentDifficulty && (
+                            <Badge variant="outline" className="text-[10px] uppercase tracking-[0.18em]">
+                              {currentDifficulty}
+                            </Badge>
+                          )}
+                          {currentCompetency && (
+                            <Badge variant="outline" className="text-[10px] uppercase tracking-[0.18em]">
+                              {currentCompetency.replace('_', ' ')}
+                            </Badge>
+                          )}
+                          {currentPanelist && (
+                            <Badge variant="secondary" className="text-[10px] uppercase tracking-[0.18em]">
+                              {currentPanelist}
+                            </Badge>
+                          )}
+                        </div>
+                        {currentFocus && (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Focus: {currentFocus}
                           </p>
                         )}
                         {status === 'active' && (
@@ -772,6 +1026,11 @@ export default function AIInterview() {
                                 : 'bg-primary/10 text-foreground'
                             }`}
                           >
+                            {item.panelist && (
+                              <div className="mb-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                                {item.panelist}
+                              </div>
+                            )}
                             {item.text}
                           </div>
                         </div>
@@ -788,7 +1047,7 @@ export default function AIInterview() {
                       <div className="mt-3 min-h-[90px] whitespace-pre-line text-sm text-foreground">
                         {liveTranscript ||
                           (status === 'active'
-                            ? 'Press “Start speaking” and answer out loud.'
+                            ? 'Start speaking and answer out loud.'
                             : 'Start a session to respond to questions.')}
                       </div>
                     </div>
@@ -856,7 +1115,22 @@ export default function AIInterview() {
                   transition={{ duration: 0.6, delay: 0.3 }}
                   className="rounded-3xl border border-border/60 bg-card/70 p-6"
                 >
-                  <h3 className="text-lg font-semibold">Coach notes</h3>
+                  <h3 className="text-lg font-semibold">Latest review</h3>
+                  {latestAnalysis?.coach_summary && (
+                    <p className="mt-2 text-sm text-muted-foreground">{latestAnalysis.coach_summary}</p>
+                  )}
+                  {latestAnalysis?.rubric && (
+                    <div className="mt-4 grid grid-cols-2 gap-2">
+                      {Object.entries(latestAnalysis.rubric).map(([key, value]) => (
+                        <div key={key} className="rounded-2xl border border-border/60 bg-background/60 p-3">
+                          <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                            {key.replace('_', ' ')}
+                          </div>
+                          <div className="mt-1 text-lg font-semibold">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="mt-4 space-y-3">
                     {feedback.length === 0 ? (
                       <div className="rounded-2xl border border-dashed border-border/70 bg-muted/30 p-6 text-center text-sm text-muted-foreground">
@@ -890,21 +1164,52 @@ export default function AIInterview() {
                   transition={{ duration: 0.6, delay: 0.4 }}
                   className="rounded-3xl border border-border/60 bg-card/70 p-6"
                 >
-                  <h3 className="text-lg font-semibold">Quick boosts</h3>
+                  <h3 className="text-lg font-semibold">Verdict board</h3>
                   <div className="mt-4 space-y-3">
-                    {tips.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-border/70 bg-muted/30 p-6 text-center text-sm text-muted-foreground">
-                        Suggestions will appear when your pacing shifts.
-                      </div>
-                    ) : (
-                      tips.map((tip, index) => (
-                        <div
-                          key={index}
-                          className="rounded-2xl border border-border/60 bg-background/70 p-3 text-sm text-muted-foreground"
-                        >
-                          {tip}
+                    {summary ? (
+                      <>
+                        <div className="rounded-2xl border border-primary/20 bg-primary/10 p-4">
+                          <div className="text-xs uppercase tracking-[0.18em] text-primary">Recommendation</div>
+                          <div className="mt-1 text-base font-semibold text-foreground">
+                            {summary.recommendation || 'In progress'}
+                          </div>
+                          <div className="mt-2 text-sm text-muted-foreground">
+                            Hiring readiness: {summary.readiness_score ?? 0}/100
+                          </div>
                         </div>
-                      ))
+                        {(summary.highlights || []).length > 0 && (
+                          <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
+                            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Highlights</div>
+                            <div className="mt-2 space-y-2 text-sm text-muted-foreground">
+                              {(summary.highlights || []).map((item, index) => (
+                                <div key={index}>{item}</div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {(summary.red_flags || []).length > 0 && (
+                          <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4">
+                            <div className="text-xs uppercase tracking-[0.18em] text-amber-500">Red flags</div>
+                            <div className="mt-2 space-y-2 text-sm text-foreground">
+                              {(summary.red_flags || []).map((item, index) => (
+                                <div key={index}>{item}</div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
+                          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Next steps</div>
+                          <div className="mt-2 space-y-2 text-sm text-muted-foreground">
+                            {(summary.next_steps || []).length > 0
+                              ? summary.next_steps.map((tip, index) => <div key={index}>{tip}</div>)
+                              : tips.map((tip, index) => <div key={index}>{tip}</div>)}
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-border/70 bg-muted/30 p-6 text-center text-sm text-muted-foreground">
+                        Run a session to generate a hiring-style verdict and coaching plan.
+                      </div>
                     )}
                   </div>
                 </motion.div>
@@ -938,11 +1243,37 @@ export default function AIInterview() {
                               <div className="mt-1 text-xs text-muted-foreground">
                                 {item.answered}/{item.questions} questions answered
                               </div>
+                              {(item.target_role || item.interview_mode) && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {item.target_role && (
+                                    <Badge variant="outline" className="text-[10px] uppercase tracking-[0.16em]">
+                                      {item.target_role}
+                                    </Badge>
+                                  )}
+                                  {item.interview_mode && (
+                                    <Badge variant="outline" className="text-[10px] uppercase tracking-[0.16em]">
+                                      {item.interview_mode.replace('_', ' ')}
+                                    </Badge>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                            <div className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
-                              {item.score}/100
+                            <div className="space-y-2 text-right">
+                              <div className="rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary">
+                                {item.score}/100
+                              </div>
+                              {typeof item.readiness_score === 'number' && (
+                                <div className="text-xs text-muted-foreground">
+                                  Readiness {item.readiness_score}/100
+                                </div>
+                              )}
                             </div>
                           </div>
+                          {item.recommendation && (
+                            <div className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-primary">
+                              {item.recommendation}
+                            </div>
+                          )}
                           <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
                             <div>
                               <div className="text-xs uppercase tracking-[0.2em] text-muted-foreground">

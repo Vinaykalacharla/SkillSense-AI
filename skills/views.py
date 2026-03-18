@@ -71,6 +71,14 @@ def _safe_int(value, default=0):
         return default
 
 
+def _clamp_number(value, minimum=0, maximum=100):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = float(minimum)
+    return max(minimum, min(maximum, numeric))
+
+
 def _normalize_string_list(raw_value):
     if raw_value is None:
         return []
@@ -2043,6 +2051,894 @@ def _interview_state_payload(session):
         "score": score_pct,
     }
 
+
+def _candidate_skill_names(user, limit=8):
+    names = []
+    seen = set()
+    for skill in list(user.skills.all()):
+        normalized = (skill.name or "").strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(normalized)
+    if names:
+        return names[:limit]
+
+    fallback = []
+    for item in (user.student_skills or "").split(","):
+        normalized = item.strip()
+        key = normalized.lower()
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        fallback.append(normalized)
+    return fallback[:limit]
+
+
+def _infer_interview_track(target_role, focus_areas, candidate_skills):
+    tokens = " ".join([target_role or "", " ".join(focus_areas or []), " ".join(candidate_skills or [])]).lower()
+    if any(term in tokens for term in ["frontend", "react", "ui", "web", "javascript", "typescript"]):
+        return "frontend"
+    if any(term in tokens for term in ["backend", "api", "django", "flask", "node", "microservice", "spring"]):
+        return "backend"
+    if any(term in tokens for term in ["full stack", "fullstack", "mern", "mean"]):
+        return "fullstack"
+    if any(term in tokens for term in ["data", "analytics", "machine learning", "ml"]):
+        return "data"
+    if any(term in tokens for term in ["devops", "cloud", "docker", "kubernetes", "sre", "platform"]):
+        return "devops"
+    if any(term in tokens for term in ["mobile", "android", "ios", "flutter", "react native"]):
+        return "mobile"
+    return "general"
+
+
+def _advanced_interview_defaults(user):
+    skills = _candidate_skill_names(user)
+    skill_tokens = " ".join(skills).lower()
+    if any(token in skill_tokens for token in ["react", "frontend", "javascript", "typescript"]):
+        target_role = "Frontend Engineer"
+    elif any(token in skill_tokens for token in ["django", "python", "backend", "api", "sql"]):
+        target_role = "Backend Engineer"
+    elif any(token in skill_tokens for token in ["data", "machine learning", "analytics"]):
+        target_role = "Data Engineer"
+    else:
+        target_role = "Software Engineer"
+
+    focus_areas = _normalize_string_list(skills[:3] or ["problem solving", "communication", "system design"])[:4]
+    year = (user.year_of_study or "").lower()
+    seniority = "intern" if any(term in year for term in ["1st", "2nd"]) else "new_grad"
+    return {
+        "target_role": target_role,
+        "seniority": seniority,
+        "company_style": "product",
+        "interview_mode": "mixed",
+        "focus_areas": focus_areas,
+        "candidate_skills": skills,
+        "question_count": 9,
+        "answer_time_sec": 120,
+        "max_followups": 3,
+        "track": _infer_interview_track(target_role, focus_areas, skills),
+    }
+
+
+def _normalize_advanced_interview_profile(user, raw_profile=None):
+    defaults = _advanced_interview_defaults(user)
+    raw = raw_profile or {}
+    if isinstance(raw, dict) and isinstance(raw.get("config"), dict):
+        raw = raw.get("config") or {}
+
+    target_role = (raw.get("target_role") or defaults["target_role"]).strip()[:120]
+    seniority = (raw.get("seniority") or defaults["seniority"]).strip().lower()
+    if seniority not in {"intern", "new_grad", "junior", "mid", "senior"}:
+        seniority = defaults["seniority"]
+    company_style = (raw.get("company_style") or defaults["company_style"]).strip().lower()
+    if company_style not in {"product", "startup", "enterprise", "consulting"}:
+        company_style = defaults["company_style"]
+    interview_mode = (raw.get("interview_mode") or defaults["interview_mode"]).strip().lower()
+    if interview_mode not in {"mixed", "technical", "behavioral", "system_design"}:
+        interview_mode = defaults["interview_mode"]
+
+    focus_areas = _normalize_string_list(raw.get("focus_areas") or defaults["focus_areas"])[:4]
+    candidate_skills = _normalize_string_list(raw.get("candidate_skills") or defaults["candidate_skills"])[:8]
+    question_count = int(_clamp_number(raw.get("question_count", defaults["question_count"]), 8, 12))
+    answer_time_sec = int(_clamp_number(raw.get("answer_time_sec", defaults["answer_time_sec"]), 90, 180))
+    max_followups = int(_clamp_number(raw.get("max_followups", defaults["max_followups"]), 1, 4))
+
+    return {
+        "target_role": target_role,
+        "seniority": seniority,
+        "company_style": company_style,
+        "interview_mode": interview_mode,
+        "focus_areas": focus_areas,
+        "candidate_skills": candidate_skills,
+        "question_count": question_count,
+        "answer_time_sec": answer_time_sec,
+        "max_followups": max_followups,
+        "track": _infer_interview_track(target_role, focus_areas, candidate_skills),
+        "headline": f"{seniority.replace('_', ' ').title()} {target_role}",
+        "context": {
+            "college": user.college or "",
+            "course": user.course or "",
+            "branch": user.branch or "",
+            "year_of_study": user.year_of_study or "",
+            "linkedin_headline": user.linkedin_headline or "",
+        },
+    }
+
+
+def _advanced_question_bank():
+    return [
+        {
+            "id": "api-design",
+            "question": "Design a production-ready API for collaborative task workflows. How would you model resources, permissions, retries, and failures?",
+            "difficulty": "hard",
+            "mode": "technical",
+            "competency": "system_design",
+            "role_tracks": ["backend", "fullstack", "general"],
+            "tags": ["api", "backend", "auth", "permissions", "idempotency"],
+            "expected_signals": ["resource modeling", "authorization", "idempotency", "observability"],
+            "evaluation_focus": "Architecture depth, failure handling, and tradeoffs.",
+            "panelist": "Platform Architect",
+        },
+        {
+            "id": "react-perf",
+            "question": "A React screen re-renders too often. How do you isolate the cause and fix it without introducing accidental complexity?",
+            "difficulty": "medium",
+            "mode": "technical",
+            "competency": "problem_solving",
+            "role_tracks": ["frontend", "fullstack", "general"],
+            "tags": ["react", "frontend", "performance", "profiling"],
+            "expected_signals": ["profiling", "state boundaries", "memoization", "measurement"],
+            "evaluation_focus": "Debugging sequence and performance judgment.",
+            "panelist": "Frontend Lead",
+        },
+        {
+            "id": "db-hotspot",
+            "question": "A high-traffic endpoint slows down under load. How do you determine whether the bottleneck is query shape, indexes, cache strategy, or application code?",
+            "difficulty": "hard",
+            "mode": "technical",
+            "competency": "problem_solving",
+            "role_tracks": ["backend", "fullstack", "data", "general"],
+            "tags": ["database", "performance", "cache", "profiling", "django"],
+            "expected_signals": ["measurement", "indexes", "query analysis", "caching"],
+            "evaluation_focus": "Prioritization and evidence-based diagnosis.",
+            "panelist": "Performance Reviewer",
+        },
+        {
+            "id": "auth-boundary",
+            "question": "How would you secure an authentication flow that spans browser, API, and a third-party identity provider?",
+            "difficulty": "medium",
+            "mode": "technical",
+            "competency": "technical_depth",
+            "role_tracks": ["backend", "frontend", "fullstack", "general"],
+            "tags": ["security", "auth", "tokens", "session", "oauth"],
+            "expected_signals": ["token lifecycle", "refresh strategy", "attack surface", "storage"],
+            "evaluation_focus": "Security boundary awareness.",
+            "panelist": "Security Engineer",
+        },
+        {
+            "id": "project-ownership",
+            "question": "Tell me about a project where the outcome clearly depended on your decisions. What was ambiguous at the start, and what did you personally drive?",
+            "difficulty": "medium",
+            "mode": "behavioral",
+            "competency": "ownership",
+            "role_tracks": ["general", "backend", "frontend", "fullstack", "data", "devops", "mobile"],
+            "tags": ["ownership", "leadership", "delivery", "project"],
+            "expected_signals": ["ambiguity", "decision-making", "ownership", "outcomes"],
+            "evaluation_focus": "Ownership and decision quality.",
+            "panelist": "Hiring Manager",
+        },
+        {
+            "id": "quality-tradeoff",
+            "question": "Describe a time you had to choose between shipping quickly and improving technical quality. What tradeoff did you make, and why?",
+            "difficulty": "medium",
+            "mode": "behavioral",
+            "competency": "tradeoffs",
+            "role_tracks": ["general", "backend", "frontend", "fullstack", "data", "devops", "mobile"],
+            "tags": ["tradeoff", "quality", "delivery", "stakeholders"],
+            "expected_signals": ["tradeoffs", "stakeholder alignment", "follow-through"],
+            "evaluation_focus": "Judgment under constraint.",
+            "panelist": "Bar Raiser",
+        },
+        {
+            "id": "multi-tenant",
+            "question": "Design a multi-tenant platform for student portfolios where each university needs isolated data, custom reporting, and reliable exports.",
+            "difficulty": "hard",
+            "mode": "system_design",
+            "competency": "system_design",
+            "role_tracks": ["backend", "fullstack", "devops", "general"],
+            "tags": ["system", "multi-tenant", "data-isolation", "reporting", "scalability"],
+            "expected_signals": ["tenancy model", "authorization", "batch jobs", "storage", "observability"],
+            "evaluation_focus": "Boundary design and operational rigor.",
+            "panelist": "Systems Architect",
+        },
+        {
+            "id": "realtime-stream",
+            "question": "How would you build a realtime interview assistant that streams transcript updates, survives unstable networks, and preserves session state?",
+            "difficulty": "hard",
+            "mode": "system_design",
+            "competency": "system_design",
+            "role_tracks": ["frontend", "backend", "fullstack", "devops", "general"],
+            "tags": ["realtime", "websocket", "state", "resilience", "latency"],
+            "expected_signals": ["transport choice", "reconnect strategy", "state recovery", "latency"],
+            "evaluation_focus": "Realtime systems and resilience.",
+            "panelist": "Realtime Systems Lead",
+        },
+        {
+            "id": "feedback-loop",
+            "question": "Tell me about a time you received tough technical feedback. What changed in your work after that?",
+            "difficulty": "easy",
+            "mode": "behavioral",
+            "competency": "communication",
+            "role_tracks": ["general", "backend", "frontend", "fullstack", "data", "devops", "mobile"],
+            "tags": ["feedback", "growth", "communication", "self-awareness"],
+            "expected_signals": ["reflection", "adaptation", "specific improvement"],
+            "evaluation_focus": "Coachability and reflection.",
+            "panelist": "Hiring Manager",
+        },
+        {
+            "id": "observability-gap",
+            "question": "If users report intermittent failures but dashboards look normal, what observability gaps do you investigate first?",
+            "difficulty": "medium",
+            "mode": "system_design",
+            "competency": "problem_solving",
+            "role_tracks": ["backend", "devops", "fullstack", "general"],
+            "tags": ["observability", "incident", "tracing", "metrics", "logs"],
+            "expected_signals": ["traces", "correlation", "sampling", "alerts"],
+            "evaluation_focus": "Production debugging maturity.",
+            "panelist": "Production Engineer",
+        },
+    ]
+
+
+def _advanced_intro_questions(user, profile):
+    role_label = profile.get("target_role") or "software role"
+    focus_text = ", ".join(profile.get("focus_areas") or []) or "core engineering"
+    return [
+        {
+            "id": "intro-role",
+            "question": f"Give me a concise introduction: who you are, the {role_label} role you want, and what makes you credible for it.",
+            "difficulty": "easy",
+            "mode": "behavioral",
+            "competency": "communication",
+            "role_tracks": ["general"],
+            "tags": ["intro", "communication", "positioning"],
+            "expected_signals": ["clarity", "role alignment", "summary"],
+            "evaluation_focus": "Executive summary and role alignment.",
+            "panelist": "Hiring Manager",
+        },
+        {
+            "id": "intro-project",
+            "question": f"Choose one project that best represents your work in {focus_text}. Explain the problem, your ownership, and the measurable result.",
+            "difficulty": "medium",
+            "mode": "behavioral",
+            "competency": "ownership",
+            "role_tracks": ["general"],
+            "tags": ["project", "ownership", "metrics"],
+            "expected_signals": ["problem framing", "ownership", "impact"],
+            "evaluation_focus": "Ownership and evidence quality.",
+            "panelist": "Technical Lead",
+        },
+    ]
+
+
+def _advanced_difficulty_targets(profile, total):
+    seniority = profile.get("seniority")
+    if seniority == "intern":
+        return {"easy": 3, "medium": 3, "hard": max(0, total - 6)}
+    if seniority == "new_grad":
+        return {"easy": 2, "medium": 4, "hard": max(0, total - 6)}
+    if seniority == "junior":
+        return {"easy": 1, "medium": 4, "hard": max(0, total - 5)}
+    if seniority == "mid":
+        return {"easy": 1, "medium": 3, "hard": max(0, total - 4)}
+    return {"easy": 0, "medium": 3, "hard": max(0, total - 3)}
+
+
+def _advanced_question_fit_score(question, profile):
+    score = 0
+    track = profile.get("track") or "general"
+    role_tracks = question.get("role_tracks") or []
+    if track in role_tracks:
+        score += 30
+    if "general" in role_tracks:
+        score += 10
+
+    interview_mode = profile.get("interview_mode") or "mixed"
+    mode = question.get("mode") or "technical"
+    if interview_mode == "mixed":
+        score += 14
+    elif mode == interview_mode:
+        score += 24
+    elif interview_mode == "technical" and mode == "system_design":
+        score += 12
+    elif interview_mode == "system_design" and mode == "technical":
+        score += 8
+
+    focus_tokens = _tokenize_match_text(" ".join(profile.get("focus_areas") or []))
+    skill_tokens = _tokenize_match_text(" ".join(profile.get("candidate_skills") or []))
+    question_tokens = set(question.get("tags") or [])
+    score += len(focus_tokens & question_tokens) * 6
+    score += len(skill_tokens & question_tokens) * 5
+
+    targets = _advanced_difficulty_targets(profile, 8)
+    if targets.get(question.get("difficulty"), 0) > 0:
+        score += 8
+    if question.get("competency") in {"ownership", "communication"} and interview_mode == "behavioral":
+        score += 10
+    if question.get("competency") == "system_design" and interview_mode in {"mixed", "system_design"}:
+        score += 8
+    return score
+
+
+def _normalize_generated_advanced_question(item, fallback_id, profile):
+    if not isinstance(item, dict):
+        return None
+    question = (item.get("question") or "").strip()
+    difficulty = (item.get("difficulty") or "").strip().lower()
+    if difficulty not in {"easy", "medium", "hard"} or not question:
+        return None
+    mode = (item.get("mode") or profile.get("interview_mode") or "technical").strip().lower()
+    if mode not in {"technical", "behavioral", "system_design"}:
+        mode = "technical"
+    competency = (item.get("competency") or "problem_solving").strip().lower()
+    if competency not in {"communication", "technical_depth", "problem_solving", "ownership", "tradeoffs", "system_design"}:
+        competency = "problem_solving"
+    return {
+        "id": f"ai-{fallback_id}",
+        "question": question,
+        "difficulty": difficulty,
+        "mode": mode,
+        "competency": competency,
+        "role_tracks": [profile.get("track") or "general"],
+        "tags": _normalize_string_list(item.get("tags"))[:6],
+        "expected_signals": _normalize_string_list(item.get("expected_signals"))[:5],
+        "evaluation_focus": (item.get("evaluation_focus") or "Depth, ownership, and clarity.").strip(),
+        "panelist": (item.get("panelist") or "Domain Interviewer").strip()[:60],
+    }
+
+
+def _generate_advanced_ai_questions(user, profile, total=3, existing_questions=None):
+    if not os.environ.get("OPENAI_API_KEY") or total <= 0:
+        return []
+
+    skills = profile.get("candidate_skills") or _candidate_skill_names(user)
+    focus_areas = profile.get("focus_areas") or []
+    asked = [item.get("question") for item in (existing_questions or []) if item.get("question")]
+    parsed = _openai_chat_json(
+        "You are a senior interview panel designing high-signal engineering interviews. Return valid JSON only.",
+        (
+            f"Generate {total} advanced interview questions for a candidate targeting {profile.get('target_role')} at the "
+            f"{profile.get('seniority')} level. Company style is {profile.get('company_style')}. "
+            f"Interview mode is {profile.get('interview_mode')}. Focus areas: {', '.join(focus_areas) or 'general engineering'}. "
+            f"Candidate skills: {', '.join(skills) or 'general software engineering'}. "
+            f"Avoid duplicating these existing questions: {' | '.join(asked[:5]) or 'none'}. "
+            "Return a JSON object with key questions. questions must be an array of objects with keys: "
+            "question, difficulty, mode, competency, tags, expected_signals, evaluation_focus, panelist."
+        ),
+        max_tokens=1000,
+    )
+    if not isinstance(parsed, dict):
+        return []
+
+    cleaned = []
+    for item in parsed.get("questions") or []:
+        normalized = _normalize_generated_advanced_question(item, len(cleaned) + 1, profile)
+        if normalized:
+            cleaned.append(normalized)
+    return cleaned[:total]
+
+
+def _select_advanced_questions(user, profile):
+    total = profile.get("question_count") or 9
+    intro = _advanced_intro_questions(user, profile)
+    core_total = max(0, total - len(intro))
+    ranked = sorted(
+        _advanced_question_bank(),
+        key=lambda item: (_advanced_question_fit_score(item, profile), random.random()),
+        reverse=True,
+    )
+    targets = _advanced_difficulty_targets(profile, core_total)
+    chosen = []
+    used_ids = set()
+    difficulty_counts = {"easy": 0, "medium": 0, "hard": 0}
+    competency_counts = {}
+
+    for question in ranked:
+        if len(chosen) >= core_total:
+            break
+        difficulty = question.get("difficulty") or "medium"
+        competency = question.get("competency") or "problem_solving"
+        if question["id"] in used_ids:
+            continue
+        if difficulty_counts[difficulty] >= targets.get(difficulty, core_total):
+            continue
+        if competency_counts.get(competency, 0) >= 2:
+            continue
+        chosen.append(dict(question))
+        used_ids.add(question["id"])
+        difficulty_counts[difficulty] += 1
+        competency_counts[competency] = competency_counts.get(competency, 0) + 1
+
+    for question in ranked:
+        if len(chosen) >= core_total:
+            break
+        if question["id"] in used_ids:
+            continue
+        chosen.append(dict(question))
+        used_ids.add(question["id"])
+
+    generated = _generate_advanced_ai_questions(user, profile, total=min(3, core_total), existing_questions=chosen)
+    if generated:
+        replace_count = min(len(generated), len(chosen))
+        chosen = generated + chosen[: max(0, len(chosen) - replace_count)]
+    return intro + chosen[:core_total]
+
+
+def _advanced_question_weight(question):
+    difficulty = question if isinstance(question, str) else (question or {}).get("difficulty")
+    is_followup = False if isinstance(question, str) else bool((question or {}).get("is_followup"))
+    base = {"easy": 8, "medium": 12, "hard": 16}
+    weight = base.get(difficulty, 10)
+    if is_followup:
+        weight = max(5, int(round(weight * 0.65)))
+    return weight
+
+
+def _advanced_max_score(questions):
+    return sum(_advanced_question_weight(question) for question in (questions or []))
+
+
+def _phrase_hit_count(text, phrases):
+    lowered = (text or "").lower()
+    return sum(1 for phrase in phrases if phrase in lowered)
+
+
+def _evaluate_advanced_answer(answer_text, question, profile):
+    text = (answer_text or "").strip()
+    lowered = text.lower()
+    question = question or {}
+    keyword_hits = len(set(question.get("tags") or []) & _tokenize_match_text(text))
+    keyword_hits += _phrase_hit_count(lowered, question.get("expected_signals") or [])
+    filler_count = _phrase_hit_count(lowered, [" um ", " uh ", " basically", " actually", " you know", " kind of "])
+    hedge_count = _phrase_hit_count(lowered, ["maybe", "probably", "i think", "sort of", "kind of", "not sure"])
+    action_hits = _phrase_hit_count(lowered, ["built", "implemented", "designed", "led", "delivered", "optimized", "owned", "migrated", "debugged"])
+    tradeoff_hits = _phrase_hit_count(lowered, ["tradeoff", "trade-off", "versus", "instead", "because", "constraint", "pros", "cons"])
+    testing_hits = _phrase_hit_count(lowered, ["test", "tests", "unit", "integration", "regression", "rollback", "monitoring"])
+    structure_hits = _phrase_hit_count(lowered, ["first", "then", "finally", "result", "impact", "because", "so that"])
+    ownership_hits = _phrase_hit_count(lowered, ["i led", "i built", "i designed", "i owned", "my role", "i decided", "i drove"])
+    project_hits = _phrase_hit_count(lowered, ["project", "service", "feature", "system", "platform", "module"])
+    metric_hits = len(re.findall(r"\b\d+(?:\.\d+)?(?:%|x|ms|s|sec|seconds|minutes|users|requests|queries|errors|days|weeks)?\b", text))
+    edge_case_hits = _phrase_hit_count(lowered, ["edge case", "failure", "fallback", "retry", "rollback", "timeout", "race condition"])
+    sentence_count = max(1, len([segment for segment in re.split(r"[.!?]+", text) if segment.strip()]))
+    word_count = len(text.split())
+
+    communication = _clamp_number(34 + word_count * 0.55 + sentence_count * 2.5 - filler_count * 7 - hedge_count * 4)
+    technical_depth = _clamp_number(22 + keyword_hits * 10 + testing_hits * 6 + edge_case_hits * 5 + metric_hits * 4)
+    problem_solving = _clamp_number(28 + structure_hits * 11 + edge_case_hits * 7 + tradeoff_hits * 6 + testing_hits * 4)
+    ownership = _clamp_number(26 + ownership_hits * 12 + action_hits * 6 + metric_hits * 5)
+    evidence = _clamp_number(18 + metric_hits * 16 + project_hits * 7 + keyword_hits * 4)
+    tradeoffs = _clamp_number(16 + tradeoff_hits * 18 + edge_case_hits * 5 + testing_hits * 4)
+    confidence = _clamp_number(34 + action_hits * 6 - hedge_count * 8 - filler_count * 5)
+
+    competency = question.get("competency") or "problem_solving"
+    if competency == "communication":
+        weighted_score = communication * 0.32 + ownership * 0.18 + evidence * 0.16 + confidence * 0.14 + problem_solving * 0.10 + tradeoffs * 0.10
+    elif competency in {"system_design", "tradeoffs"}:
+        weighted_score = technical_depth * 0.24 + problem_solving * 0.22 + tradeoffs * 0.22 + communication * 0.12 + evidence * 0.10 + ownership * 0.10
+    else:
+        weighted_score = technical_depth * 0.24 + problem_solving * 0.20 + communication * 0.16 + evidence * 0.14 + ownership * 0.12 + tradeoffs * 0.09 + confidence * 0.05
+
+    rubric = {
+        "communication": int(round(communication)),
+        "technical_depth": int(round(technical_depth)),
+        "problem_solving": int(round(problem_solving)),
+        "ownership": int(round(ownership)),
+        "evidence": int(round(evidence)),
+        "tradeoffs": int(round(tradeoffs)),
+        "confidence": int(round(confidence)),
+    }
+
+    strengths = []
+    improvements = []
+    red_flags = []
+    if rubric["communication"] >= 72:
+        strengths.append("Answer had a clear structure and was easy to follow.")
+    elif rubric["communication"] < 55:
+        improvements.append("Structure the response more clearly using context, action, and result.")
+    if rubric["technical_depth"] >= 70:
+        strengths.append("Technical reasoning went beyond surface-level description.")
+    elif rubric["technical_depth"] < 52 and competency != "communication":
+        improvements.append("Go deeper into implementation details and engineering choices.")
+    if rubric["evidence"] >= 65:
+        strengths.append("Used concrete examples or measurable outcomes to support claims.")
+    elif rubric["evidence"] < 45:
+        improvements.append("Use metrics, scale, or a concrete example to make the answer credible.")
+    if rubric["tradeoffs"] >= 65 and competency in {"system_design", "tradeoffs", "problem_solving"}:
+        strengths.append("Called out tradeoffs and constraints instead of presenting a single-path answer.")
+    elif competency in {"system_design", "tradeoffs"} and rubric["tradeoffs"] < 50:
+        improvements.append("Discuss alternatives, tradeoffs, and why your chosen path is appropriate.")
+    if rubric["ownership"] >= 68:
+        strengths.append("Ownership was clearly attributed to your actions and decisions.")
+    elif rubric["ownership"] < 48:
+        improvements.append("Be explicit about what you personally owned instead of team-only language.")
+
+    if word_count < 18:
+        red_flags.append("Answer was too short for a high-signal assessment.")
+    if hedge_count >= 3:
+        red_flags.append("Answer carried too much uncertainty for an interview setting.")
+    if competency in {"system_design", "tradeoffs"} and rubric["tradeoffs"] < 45:
+        red_flags.append("Critical tradeoffs were not discussed.")
+    if competency != "communication" and rubric["technical_depth"] < 42:
+        red_flags.append("Technical depth stayed below the expected bar.")
+    if rubric["evidence"] < 35:
+        red_flags.append("Claims were not backed by outcomes, scale, or specifics.")
+
+    weakest_dimension = min(rubric.items(), key=lambda item: item[1])[0]
+    strongest_dimension = max(rubric.items(), key=lambda item: item[1])[0]
+    quality_score = int(round(_clamp_number(weighted_score)))
+    points = int(round(_advanced_question_weight(question) * (quality_score / 100.0)))
+    return {
+        "word_count": word_count,
+        "quality_score": quality_score,
+        "points": points,
+        "rubric": rubric,
+        "strengths": strengths[:3],
+        "improvements": improvements[:3],
+        "red_flags": red_flags[:3],
+        "signals": {
+            "filler_count": filler_count,
+            "hedge_count": hedge_count,
+            "metric_hits": metric_hits,
+            "tradeoff_hits": tradeoff_hits,
+            "testing_hits": testing_hits,
+            "keyword_hits": keyword_hits,
+        },
+        "weakest_dimension": weakest_dimension,
+        "strongest_dimension": strongest_dimension,
+        "followup_reason": "Probe the weakest dimension to validate depth." if red_flags or quality_score < 68 else "Escalate with a deeper question because the answer showed strong signal.",
+        "followup_style": "gap_probe" if red_flags or quality_score < 68 else "bar_raise",
+        "coach_summary": f"Strongest signal: {strongest_dimension.replace('_', ' ')}. Weakest signal: {weakest_dimension.replace('_', ' ')}.",
+    }
+
+
+def _advanced_feedback_payload(answer_analysis):
+    if not answer_analysis:
+        return []
+    items = [{"type": "strength", "text": text} for text in answer_analysis.get("strengths", [])[:2]]
+    items.extend({"type": "improvement", "text": text} for text in answer_analysis.get("improvements", [])[:2])
+    if not items:
+        items.append({"type": "improvement", "text": "Expand the next answer with more specifics and clearer ownership."})
+    return items[:4]
+
+
+def _advanced_summary_payload(answers, questions=None, profile=None, score=0):
+    if not answers:
+        return {
+            "strengths": ["Session has started but there is not enough signal yet."],
+            "improvements": ["Answer a few questions to generate a meaningful hiring summary."],
+            "red_flags": [],
+            "next_steps": ["Use STAR structure and concrete project evidence."],
+            "readiness_score": 0,
+            "recommendation": "Signal not ready",
+            "competency_scores": {},
+            "highlights": [],
+        }
+
+    rubric_totals = {
+        "communication": 0,
+        "technical_depth": 0,
+        "problem_solving": 0,
+        "ownership": 0,
+        "evidence": 0,
+        "tradeoffs": 0,
+        "confidence": 0,
+    }
+    red_flags = []
+    highlights = []
+    improvements = []
+    for answer in answers:
+        analysis = answer.get("analysis") or {}
+        rubric = analysis.get("rubric") or {}
+        for key in rubric_totals:
+            rubric_totals[key] += int(rubric.get(key, 0) or 0)
+        red_flags.extend(analysis.get("red_flags", []))
+        highlights.extend(analysis.get("strengths", []))
+        improvements.extend(analysis.get("improvements", []))
+
+    total_answers = max(1, len(answers))
+    competency_scores = {key: int(round(value / total_answers)) for key, value in rubric_totals.items()}
+    score_pct = int(round((score / max(1, _advanced_max_score(questions or []))) * 100)) if questions else 0
+    readiness_score = int(round((score_pct * 0.55) + (_score_mean(list(competency_scores.values())) * 0.45)))
+    readiness_score = int(_clamp_number(readiness_score))
+    ordered_scores = sorted(competency_scores.items(), key=lambda item: item[1], reverse=True)
+    top_dimensions = [item[0] for item in ordered_scores[:2]]
+    bottom_dimensions = [item[0] for item in ordered_scores[-2:]]
+
+    strengths = []
+    if "communication" in top_dimensions:
+        strengths.append("Communicates ideas with clear structure and good pacing.")
+    if "technical_depth" in top_dimensions:
+        strengths.append("Shows enough implementation depth to support technical claims.")
+    if "ownership" in top_dimensions:
+        strengths.append("Makes personal contribution and decision-making explicit.")
+    if "evidence" in top_dimensions:
+        strengths.append("Backs claims with examples, metrics, or production context.")
+    if not strengths:
+        strengths.append("Stayed engaged and produced usable signal across the session.")
+
+    summary_improvements = []
+    for dimension in bottom_dimensions:
+        if dimension == "communication":
+            summary_improvements.append("Tighten answer structure and reduce ambiguity under pressure.")
+        elif dimension == "technical_depth":
+            summary_improvements.append("Go deeper into implementation details, architecture, and failure modes.")
+        elif dimension == "problem_solving":
+            summary_improvements.append("Show the debugging or reasoning sequence more explicitly.")
+        elif dimension == "ownership":
+            summary_improvements.append("Separate your contribution from the team's contribution more clearly.")
+        elif dimension == "evidence":
+            summary_improvements.append("Use measurable results, scale, and concrete examples more consistently.")
+        elif dimension == "tradeoffs":
+            summary_improvements.append("Discuss alternatives, constraints, and why one path was chosen.")
+        elif dimension == "confidence":
+            summary_improvements.append("State decisions more directly and reduce hedging language.")
+
+    unique_red_flags = []
+    seen_flags = set()
+    for item in red_flags:
+        normalized = item.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen_flags:
+            continue
+        seen_flags.add(key)
+        unique_red_flags.append(normalized)
+
+    if readiness_score >= 84 and len(unique_red_flags) <= 1:
+        recommendation = "Strong shortlist"
+    elif readiness_score >= 70:
+        recommendation = "Proceed with targeted follow-up round"
+    elif readiness_score >= 58:
+        recommendation = "Needs coaching before recruiter-facing rounds"
+    else:
+        recommendation = "Not ready for external interview loop yet"
+
+    next_steps = []
+    if "technical_depth" in bottom_dimensions:
+        next_steps.append("Prepare deeper implementation explanations for one project in your portfolio.")
+    if "tradeoffs" in bottom_dimensions:
+        next_steps.append("Practice answering with alternatives considered, constraints, and final decision.")
+    if "evidence" in bottom_dimensions:
+        next_steps.append("Attach metrics, scale, latency, users, or quality outcomes to your examples.")
+    if "communication" in bottom_dimensions:
+        next_steps.append("Use a tighter context-action-result structure for each answer.")
+    if not next_steps:
+        next_steps.append("Maintain depth and consistency across harder follow-up rounds.")
+
+    return {
+        "strengths": strengths[:3],
+        "improvements": summary_improvements[:3],
+        "red_flags": unique_red_flags[:3],
+        "next_steps": next_steps[:3],
+        "readiness_score": readiness_score,
+        "recommendation": recommendation,
+        "competency_scores": competency_scores,
+        "answered_questions": len(answers),
+        "target_role": (profile or {}).get("target_role") if isinstance(profile, dict) else None,
+        "interview_mode": (profile or {}).get("interview_mode") if isinstance(profile, dict) else None,
+        "followup_questions": sum(1 for question in (questions or []) if question.get("is_followup")),
+        "highlights": highlights[:3],
+    }
+
+
+def _advanced_metrics_payload(answers, questions, score, summary):
+    total = max(1, len(questions or []))
+    answered = len(answers or [])
+    progress = int(round((answered / total) * 100))
+    score_pct = int(round((score / max(1, _advanced_max_score(questions or []))) * 100))
+    competency_scores = summary.get("competency_scores") or {}
+    return [
+        {"label": "Interview Score", "value": score_pct, "color": "primary"},
+        {"label": "Progress", "value": progress, "color": "accent"},
+        {"label": "Technical Depth", "value": int(competency_scores.get("technical_depth", 0) or 0), "color": "primary"},
+        {"label": "Communication", "value": int(competency_scores.get("communication", 0) or 0), "color": "accent"},
+        {"label": "Ownership", "value": int(competency_scores.get("ownership", 0) or 0), "color": "primary"},
+        {"label": "Hiring Readiness", "value": int(summary.get("readiness_score", 0) or 0), "color": "accent"},
+    ]
+
+
+def _advanced_tips_payload(answers, summary):
+    if not answers:
+        return [
+            "Answer in context-action-result order.",
+            "Tie every important claim to a concrete example or metric.",
+            "Explain one tradeoff whenever the question involves architecture or scale.",
+        ]
+
+    latest_analysis = (answers[-1] or {}).get("analysis") or {}
+    weakest = latest_analysis.get("weakest_dimension")
+    tip_map = {
+        "communication": "Lead with the headline first, then fill in supporting detail.",
+        "technical_depth": "Name the exact mechanism, technology choice, or failure boundary involved.",
+        "problem_solving": "Explain the sequence: hypothesis, test, observation, decision.",
+        "ownership": "State your personal decision and the part you directly owned.",
+        "evidence": "Use metrics, traffic, latency, defect counts, or business outcomes.",
+        "tradeoffs": "Name the rejected alternatives and the reason they lost.",
+        "confidence": "Use direct language and avoid softening your decision unnecessarily.",
+    }
+    tips = [tip_map[weakest]] if weakest in tip_map else []
+    for item in summary.get("next_steps", [])[:2]:
+        if item not in tips:
+            tips.append(item)
+    return [item for item in tips if item][:3]
+
+
+def _generate_advanced_followup(answer_text, current_question, profile, answer_analysis, current_questions=None):
+    question = current_question or {}
+    current_questions = current_questions or []
+    if question.get("is_followup") or int(question.get("followup_depth", 0) or 0) >= 1:
+        return None
+    followup_count = sum(1 for item in current_questions if item.get("is_followup"))
+    if followup_count >= int((profile or {}).get("max_followups", 2) or 2):
+        return None
+
+    weakest = (answer_analysis or {}).get("weakest_dimension") or "technical_depth"
+    style = (answer_analysis or {}).get("followup_style") or "gap_probe"
+    fallback_gap = {
+        "communication": "Re-answer that in a tighter structure: context, your action, and the result.",
+        "technical_depth": "Go one level deeper into the implementation details. What exactly happened under the hood?",
+        "problem_solving": "Walk me through the decision sequence step by step, including what you ruled out.",
+        "ownership": "What was specifically yours to own, and what critical decision did you personally make?",
+        "evidence": "What measurable result or production signal proved the approach actually worked?",
+        "tradeoffs": "What alternatives did you evaluate, and why did you reject them?",
+        "confidence": "State your decision more directly. What would you defend if challenged on this approach?",
+    }
+    fallback_raise = {
+        "technical_depth": "Assume the load doubles tomorrow. What part of your design breaks first and how do you redesign it?",
+        "problem_solving": "What is the hardest failure mode in that approach, and how would you prove your mitigation works?",
+        "tradeoffs": "Under tight latency and reliability constraints, which tradeoff becomes unacceptable and why?",
+        "evidence": "What metric would you monitor in the first 24 hours to prove the system is healthy?",
+    }
+
+    if os.environ.get("OPENAI_API_KEY"):
+        result = _openai_chat_json(
+            "Generate one short follow-up interview question. Return JSON only with keys question and difficulty.",
+            (
+                f"Candidate target role: {(profile or {}).get('target_role')}. "
+                f"Interview mode: {(profile or {}).get('interview_mode')}. "
+                f"Current question: {question.get('question')}. "
+                f"Candidate answer: {answer_text}. "
+                f"Weakest dimension: {weakest}. "
+                f"Follow-up style: {style}. "
+                f"Reason: {(answer_analysis or {}).get('followup_reason')}."
+            ),
+            max_tokens=180,
+        )
+        if isinstance(result, dict):
+            followup_question = (result.get("question") or "").strip()
+            followup_difficulty = (result.get("difficulty") or "medium").strip().lower()
+            if followup_question and followup_difficulty in {"easy", "medium", "hard"}:
+                return {
+                    "id": f"followup-{random.randint(1000, 9999)}",
+                    "question": followup_question,
+                    "difficulty": followup_difficulty,
+                    "mode": question.get("mode") or "technical",
+                    "competency": weakest if weakest in {"communication", "technical_depth", "problem_solving", "ownership", "tradeoffs", "system_design"} else "problem_solving",
+                    "role_tracks": [profile.get("track") or "general"],
+                    "tags": ["followup", weakest],
+                    "expected_signals": [weakest.replace("_", " ")],
+                    "evaluation_focus": (answer_analysis or {}).get("followup_reason") or "Follow-up depth check.",
+                    "panelist": question.get("panelist") or "Follow-up Reviewer",
+                    "is_followup": True,
+                    "followup_depth": int(question.get("followup_depth", 0) or 0) + 1,
+                    "parent_id": question.get("id"),
+                }
+
+    fallback_question = fallback_raise.get(weakest) if style == "bar_raise" else fallback_gap.get(weakest)
+    if not fallback_question:
+        return None
+    return {
+        "id": f"followup-{random.randint(1000, 9999)}",
+        "question": fallback_question,
+        "difficulty": "hard" if style == "bar_raise" else "medium",
+        "mode": question.get("mode") or "technical",
+        "competency": weakest if weakest in {"communication", "technical_depth", "problem_solving", "ownership", "tradeoffs", "system_design"} else "problem_solving",
+        "role_tracks": [profile.get("track") or "general"],
+        "tags": ["followup", weakest],
+        "expected_signals": [weakest.replace("_", " ")],
+        "evaluation_focus": (answer_analysis or {}).get("followup_reason") or "Follow-up depth check.",
+        "panelist": question.get("panelist") or "Follow-up Reviewer",
+        "is_followup": True,
+        "followup_depth": int(question.get("followup_depth", 0) or 0) + 1,
+        "parent_id": question.get("id"),
+    }
+
+
+def _advanced_state_payload(session):
+    questions = session.questions or []
+    total = len(questions)
+    index = session.current_index
+    current = questions[index] if 0 <= index < total else None
+    session_profile = session.session_profile or {}
+    score_pct = int(round((session.score / max(1, _advanced_max_score(questions))) * 100)) if questions else 0
+    return {
+        "total_questions": total,
+        "current_index": index,
+        "current_question": current.get("question") if current else None,
+        "current_difficulty": current.get("difficulty") if current else None,
+        "current_competency": current.get("competency") if current else None,
+        "current_panelist": current.get("panelist") if current else None,
+        "current_focus": current.get("evaluation_focus") if current else None,
+        "score": score_pct,
+        "answer_time_sec": int(session_profile.get("answer_time_sec", 120) or 120),
+    }
+
+
+def _advanced_history_payload(user, limit=6):
+    sessions = user.ai_interviews.all()[:limit]
+    payload = []
+    for session in sessions:
+        answers = session.answers or []
+        profile = session.session_profile or _advanced_interview_defaults(user)
+        summary = session.summary or _advanced_summary_payload(answers, session.questions or [], profile, score=session.score or 0)
+        payload.append({
+            "id": session.id,
+            "status": session.status,
+            "score": _advanced_state_payload(session)["score"],
+            "answered": len(answers),
+            "questions": len(session.questions or []),
+            "started_at": session.started_at.isoformat() if session.started_at else None,
+            "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+            "strengths": summary.get("strengths", [])[:2],
+            "improvements": summary.get("improvements", [])[:2],
+            "target_role": profile.get("target_role"),
+            "interview_mode": profile.get("interview_mode"),
+            "readiness_score": summary.get("readiness_score", 0),
+            "recommendation": summary.get("recommendation"),
+        })
+    return payload
+
+
+def _advanced_session_payload(user, session=None):
+    setup_defaults = _advanced_interview_defaults(user)
+    if not session:
+        idle_session = AIInterviewSession(user=user, session_profile=setup_defaults, summary={})
+        return {
+            "status": "idle",
+            "transcript": [],
+            "feedback": [],
+            "metrics": [],
+            "tips": [],
+            "history": _advanced_history_payload(user),
+            "session_profile": setup_defaults,
+            "summary": {},
+            "latest_analysis": {},
+            "setup_defaults": setup_defaults,
+            **_advanced_state_payload(idle_session),
+        }
+
+    summary = session.summary or _advanced_summary_payload(session.answers or [], session.questions or [], session.session_profile or setup_defaults, score=session.score or 0)
+    latest_answer = (session.answers or [])[-1] if session.answers else {}
+    return {
+        "status": session.status,
+        "transcript": session.transcript,
+        "feedback": session.feedback,
+        "metrics": session.metrics,
+        "tips": session.tips,
+        "history": _advanced_history_payload(user),
+        "session_profile": session.session_profile or setup_defaults,
+        "summary": summary,
+        "latest_analysis": latest_answer.get("analysis") or {},
+        "setup_defaults": setup_defaults,
+        "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+        **_advanced_state_payload(session),
+    }
+
 def _flag_ai_generated_repos(owner, user=None):
     headers = _github_headers()
     repos_url = f"https://api.github.com/users/{owner}/repos?per_page=100&sort=updated"
@@ -2360,23 +3256,7 @@ def _resume_preview_payload(user):
 
 
 def _interview_history_payload(user, limit=6):
-    sessions = user.ai_interviews.all()[:limit]
-    payload = []
-    for session in sessions:
-        answers = session.answers or []
-        summary = _build_interview_summary(answers) if answers else {"strengths": [], "improvements": []}
-        payload.append({
-            "id": session.id,
-            "status": session.status,
-            "score": _interview_state_payload(session)["score"],
-            "answered": len(answers),
-            "questions": len(session.questions or []),
-            "started_at": session.started_at.isoformat() if session.started_at else None,
-            "completed_at": session.completed_at.isoformat() if session.completed_at else None,
-            "strengths": summary.get("strengths", [])[:2],
-            "improvements": summary.get("improvements", [])[:2],
-        })
-    return payload
+    return _advanced_history_payload(user, limit=limit)
 
 
 def _student_summary_payload(student):
@@ -2809,26 +3689,7 @@ def skill_passport_pdf_view(request):
 @permission_classes([IsAuthenticated])
 def ai_interview_view(request):
     session = AIInterviewSession.objects.filter(user=request.user).first()
-    if not session:
-        return Response({
-            'status': 'idle',
-            'transcript': [],
-            'feedback': [],
-            'metrics': [],
-            'tips': [],
-            'history': _interview_history_payload(request.user),
-            **_interview_state_payload(AIInterviewSession(user=request.user)),
-        })
-    return Response({
-        'status': session.status,
-        'transcript': session.transcript,
-        'feedback': session.feedback,
-        'metrics': session.metrics,
-        'tips': session.tips,
-        'history': _interview_history_payload(request.user),
-        **_interview_state_payload(session),
-        'updated_at': session.updated_at.isoformat(),
-    })
+    return Response(_advanced_session_payload(request.user, session))
 
 
 @api_view(['POST'])
@@ -2836,18 +3697,27 @@ def ai_interview_view(request):
 def ai_interview_action_view(request):
     action = request.data.get('action')
     if action == 'start':
-        questions = _select_or_generate_questions(request.user, total=10)
+        profile = _normalize_advanced_interview_profile(request.user, request.data)
+        questions = _select_advanced_questions(request.user, profile)
         if not questions:
             return Response({'error': 'AI question generation failed'}, status=502)
         first = questions[0] if questions else None
-        metrics = _build_interview_metrics([], questions, 0)
-        tips = _build_interview_tips([])
+        summary = _advanced_summary_payload([], questions, profile, score=0)
+        metrics = _advanced_metrics_payload([], questions, 0, summary)
+        tips = _advanced_tips_payload([], summary)
+        AIInterviewSession.objects.filter(user=request.user, status='active').update(
+            status='completed',
+            completed_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
         session = AIInterviewSession.objects.create(
             user=request.user,
             transcript=[{
                 'speaker': 'AI',
                 'text': first.get('question') if first else 'Tell me about a recent project you built.',
                 'difficulty': first.get('difficulty') if first else 'easy',
+                'panelist': first.get('panelist') if first else 'Hiring Manager',
+                'competency': first.get('competency') if first else 'communication',
                 'question_index': 0,
             }],
             questions=questions,
@@ -2856,16 +3726,10 @@ def ai_interview_action_view(request):
             score=0,
             metrics=metrics,
             tips=tips,
+            session_profile=profile,
+            summary=summary,
         )
-        return Response({
-            'status': session.status,
-            'transcript': session.transcript,
-            'feedback': session.feedback,
-            'metrics': metrics,
-            'tips': tips,
-            'history': _interview_history_payload(request.user),
-            **_interview_state_payload(session),
-        })
+        return Response(_advanced_session_payload(request.user, session))
 
     session = AIInterviewSession.objects.filter(user=request.user, status='active').first()
     if not session:
@@ -2884,16 +3748,19 @@ def ai_interview_action_view(request):
             return Response({'error': 'Interview already completed'}, status=400)
 
         current = questions[index]
-        word_count = len(message.split())
-        points = _score_answer(message, current.get("difficulty"))
+        profile = session.session_profile or _advanced_interview_defaults(request.user)
+        analysis = _evaluate_advanced_answer(message, current, profile)
 
         answers = list(session.answers or [])
         answers.append({
             "question": current.get("question"),
             "difficulty": current.get("difficulty"),
+            "competency": current.get("competency"),
+            "panelist": current.get("panelist"),
             "answer": message,
-            "word_count": word_count,
-            "points": points,
+            "word_count": analysis.get("word_count", 0),
+            "points": analysis.get("points", 0),
+            "analysis": analysis,
         })
 
         transcript = list(session.transcript or [])
@@ -2901,12 +3768,14 @@ def ai_interview_action_view(request):
             'speaker': 'You',
             'text': message,
             'difficulty': current.get("difficulty"),
+            'panelist': current.get("panelist"),
+            'competency': current.get("competency"),
             'question_index': index,
         })
 
-        session.score = (session.score or 0) + points
+        session.score = (session.score or 0) + int(analysis.get("points", 0) or 0)
 
-        followup = _generate_followup_question(message, current.get("question"))
+        followup = _generate_advanced_followup(message, current, profile, analysis, current_questions=questions)
         if followup:
             questions.insert(index + 1, followup)
 
@@ -2916,30 +3785,38 @@ def ai_interview_action_view(request):
                 'speaker': 'AI',
                 'text': next_q.get('question'),
                 'difficulty': next_q.get('difficulty'),
+                'panelist': next_q.get('panelist'),
+                'competency': next_q.get('competency'),
                 'question_index': index + 1,
             })
             session.current_index = index + 1
         else:
-            summary = _build_interview_summary(answers)
+            summary = _advanced_summary_payload(answers, questions, profile, score=session.score)
             session.status = 'completed'
             session.completed_at = timezone.now()
+            session.current_index = len(questions)
             transcript.append({
                 'speaker': 'AI',
                 'text': (
-                    "Interview completed. Summary:\n"
-                    f"Strengths: {', '.join(summary['strengths'])}. "
-                    f"Improvements: {', '.join(summary['improvements'])}."
+                    "Interview completed. "
+                    f"Recommendation: {summary.get('recommendation')}. "
+                    f"Top strengths: {', '.join(summary.get('strengths', [])[:2])}. "
+                    f"Next steps: {', '.join(summary.get('next_steps', [])[:2])}."
                 ),
                 'difficulty': 'summary',
+                'panelist': 'AI Review Board',
+                'competency': 'summary',
                 'question_index': index,
             })
 
+        summary = _advanced_summary_payload(answers, questions, profile, score=session.score)
         session.answers = answers
         session.questions = questions
         session.transcript = transcript
-        session.metrics = _build_interview_metrics(answers, questions, session.score)
-        session.feedback = _build_interview_feedback(answers[-1])
-        session.tips = _build_interview_tips(answers)
+        session.metrics = _advanced_metrics_payload(answers, questions, session.score, summary)
+        session.feedback = _advanced_feedback_payload(analysis)
+        session.tips = _advanced_tips_payload(answers, summary)
+        session.summary = summary
         session.save(update_fields=[
             'answers',
             'transcript',
@@ -2948,6 +3825,7 @@ def ai_interview_action_view(request):
             'feedback',
             'tips',
             'score',
+            'summary',
             'current_index',
             'status',
             'completed_at',
@@ -2961,23 +3839,39 @@ def ai_interview_action_view(request):
                 "Your mock interview history and latest score are now available.",
                 category="verification" if request.user.profile_verified else "student",
                 link="/dashboard/interview",
-                metadata={"session_id": session.id, "score": _interview_state_payload(session)["score"]},
+                metadata={
+                    "session_id": session.id,
+                    "score": _advanced_state_payload(session)["score"],
+                    "readiness": summary.get("readiness_score", 0),
+                },
             )
 
-        return Response({
-            'status': session.status,
-            'transcript': session.transcript,
-            'feedback': session.feedback,
-            'metrics': session.metrics,
-            'tips': session.tips,
-            'history': _interview_history_payload(request.user),
-            **_interview_state_payload(session),
-        })
+        return Response(_advanced_session_payload(request.user, session))
 
     if action == 'finish':
+        profile = session.session_profile or _advanced_interview_defaults(request.user)
+        summary = _advanced_summary_payload(session.answers or [], session.questions or [], profile, score=session.score or 0)
+        transcript = list(session.transcript or [])
+        if not transcript or transcript[-1].get('difficulty') != 'summary':
+            transcript.append({
+                'speaker': 'AI',
+                'text': (
+                    f"Session closed. Recommendation: {summary.get('recommendation')}. "
+                    f"Primary next step: {(summary.get('next_steps') or ['Review the weakest interview dimension.'])[0]}"
+                ),
+                'difficulty': 'summary',
+                'panelist': 'AI Review Board',
+                'competency': 'summary',
+                'question_index': session.current_index,
+            })
         session.status = 'completed'
         session.completed_at = timezone.now()
-        session.save(update_fields=['status', 'completed_at', 'updated_at'])
+        session.summary = summary
+        session.metrics = _advanced_metrics_payload(session.answers or [], session.questions or [], session.score or 0, summary)
+        session.tips = _advanced_tips_payload(session.answers or [], summary)
+        session.transcript = transcript
+        session.current_index = len(session.questions or [])
+        session.save(update_fields=['status', 'completed_at', 'summary', 'metrics', 'tips', 'transcript', 'current_index', 'updated_at'])
         _maybe_mark_profile_verified(request.user, session)
         _create_notification(
             request.user,
@@ -2985,13 +3879,13 @@ def ai_interview_action_view(request):
             "Review coach notes and use the history panel to compare attempts.",
             category="student",
             link="/dashboard/interview",
-            metadata={"session_id": session.id, "score": _interview_state_payload(session)["score"]},
+            metadata={
+                "session_id": session.id,
+                "score": _advanced_state_payload(session)["score"],
+                "readiness": summary.get("readiness_score", 0),
+            },
         )
-        return Response({
-            'status': session.status,
-            'history': _interview_history_payload(request.user),
-            **_interview_state_payload(session),
-        })
+        return Response(_advanced_session_payload(request.user, session))
 
     return Response({'error': 'Invalid action'}, status=400)
 
